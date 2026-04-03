@@ -627,39 +627,48 @@ def plot_per_source_heatmap(source_ids: List[str], true_xy: np.ndarray, prob_map
     print(f"Saved per-source heatmap figures -> {outdir}")
 
 
-def plot_histograms_from_maps(true_xy: np.ndarray, prob_maps: np.ndarray, tag: str, xlim_max: int = 50, euclid_max: float = 70.71, bins: int = 30, bar_width: float = 0.9):
-    pred_xy = np.vstack([expected_xy_from_map(p) for p in prob_maps])
-    dx = pred_xy[:, 0] - true_xy[:, 0]
-    dy = pred_xy[:, 1] - true_xy[:, 1]
-    e = np.sqrt(dx * dx + dy * dy)
-
+def _plot_error_histograms(dx: np.ndarray, dy: np.ndarray, e: np.ndarray, xlim_max: float, euclid_max: float, bins: int, bar_width: float, title_suffix: str, out_path: str):
     fig, axes = plt.subplots(1, 3, figsize=(18, 4))
     axes[0].hist(np.abs(dx), bins=bins, rwidth=bar_width, align="mid", color="#4C78A8", alpha=0.9, histtype="bar", edgecolor=HIST_EDGE_COLOR, linewidth=HIST_EDGEWIDTH)
     axes[0].set_xlim(0, xlim_max)
     axes[0].set_xticks(np.arange(0, xlim_max + 1, 10))
-    axes[0].set_title("Per-Source |X Error| (E[x])")
+    axes[0].set_title(f"Per-Source |X Error| ({title_suffix})")
     axes[0].set_xlabel("|Δx| per source")
     axes[0].set_ylabel("number of sources")
 
     axes[1].hist(np.abs(dy), bins=bins, rwidth=bar_width, align="mid", color="#F58518", alpha=0.9, histtype="bar", edgecolor=HIST_EDGE_COLOR, linewidth=HIST_EDGEWIDTH)
     axes[1].set_xlim(0, xlim_max)
     axes[1].set_xticks(np.arange(0, xlim_max + 1, 10))
-    axes[1].set_title("Per-Source |Y Error| (E[y])")
+    axes[1].set_title(f"Per-Source |Y Error| ({title_suffix})")
     axes[1].set_xlabel("|Δy| per source")
     axes[1].set_ylabel("number of sources")
 
     axes[2].hist(e, bins=bins, rwidth=bar_width, align="mid", color="#54A24B", alpha=0.9, histtype="bar", edgecolor=HIST_EDGE_COLOR, linewidth=HIST_EDGEWIDTH)
     axes[2].set_xlim(0, euclid_max)
     axes[2].set_xticks(np.arange(0, int(euclid_max) + 1, 10))
-    axes[2].set_title("Per-Source Euclidean Error (E[x,y])")
+    axes[2].set_title(f"Per-Source Euclidean Error ({title_suffix})")
     axes[2].set_xlabel("Euclidean error per source")
     axes[2].set_ylabel("number of sources")
 
     plt.tight_layout()
-    out = os.path.join(SAVE_DIR, f"histograms_from_maps_{tag}.png")
-    plt.savefig(out, dpi=150)
+    plt.savefig(out_path, dpi=150)
     plt.show()
-    print(f"Saved per-source histograms -> {out}")
+    print(f"Saved per-source histograms -> {out_path}")
+
+
+def plot_histograms_from_maps(true_xy: np.ndarray, prob_maps: np.ndarray, tag: str, xlim_max: int = 50, euclid_max: float = 70.71, bins: int = 30, bar_width: float = 0.9):
+    pred_xy = np.vstack([expected_xy_from_map(p) for p in prob_maps])
+    dx = pred_xy[:, 0] - true_xy[:, 0]
+    dy = pred_xy[:, 1] - true_xy[:, 1]
+    e = np.sqrt(dx * dx + dy * dy)
+
+    out = os.path.join(SAVE_DIR, f"histograms_from_maps_{tag}.png")
+    _plot_error_histograms(dx, dy, e, xlim_max, euclid_max, bins, bar_width, "E[x,y]", out)
+
+    zoom_xlim_max = 5
+    zoom_euclid_max = 8
+    out_zoom = os.path.join(SAVE_DIR, f"histograms_from_maps_{tag}_zoom.png")
+    _plot_error_histograms(dx, dy, e, zoom_xlim_max, zoom_euclid_max, bins, bar_width, "E[x,y] - Zoomed", out_zoom)
 
 
 def plot_histograms_from_xy(true_xy: np.ndarray, pred_xy: np.ndarray, tag: str, xlim_max: int = 50, euclid_max: float = 70.71, bins: int = 30, bar_width: float = 0.9):
@@ -667,33 +676,13 @@ def plot_histograms_from_xy(true_xy: np.ndarray, pred_xy: np.ndarray, tag: str, 
     dy = pred_xy[:, 1] - true_xy[:, 1]
     e = np.sqrt(dx * dx + dy * dy)
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 4))
-    axes[0].hist(np.abs(dx), bins=bins, rwidth=bar_width, align="mid", color="#4C78A8", alpha=0.9, histtype="bar", edgecolor=HIST_EDGE_COLOR, linewidth=HIST_EDGEWIDTH)
-    axes[0].set_xlim(0, xlim_max)
-    axes[0].set_xticks(np.arange(0, xlim_max + 1, 10))
-    axes[0].set_title("Per-Source |X Error| (MAP)")
-    axes[0].set_xlabel("|Δx| per source")
-    axes[0].set_ylabel("number of sources")
-
-    axes[1].hist(np.abs(dy), bins=bins, rwidth=bar_width, align="mid", color="#F58518", alpha=0.9, histtype="bar", edgecolor=HIST_EDGE_COLOR, linewidth=HIST_EDGEWIDTH)
-    axes[1].set_xlim(0, xlim_max)
-    axes[1].set_xticks(np.arange(0, xlim_max + 1, 10))
-    axes[1].set_title("Per-Source |Y Error| (MAP)")
-    axes[1].set_xlabel("|Δy| per source")
-    axes[1].set_ylabel("number of sources")
-
-    axes[2].hist(e, bins=bins, rwidth=bar_width, align="mid", color="#54A24B", alpha=0.9, histtype="bar", edgecolor=HIST_EDGE_COLOR, linewidth=HIST_EDGEWIDTH)
-    axes[2].set_xlim(0, euclid_max)
-    axes[2].set_xticks(np.arange(0, int(euclid_max) + 1, 10))
-    axes[2].set_title("Per-Source Euclidean Error (MAP)")
-    axes[2].set_xlabel("Euclidean error per source")
-    axes[2].set_ylabel("number of sources")
-
-    plt.tight_layout()
     out = os.path.join(SAVE_DIR, f"histograms_from_xy_{tag}.png")
-    plt.savefig(out, dpi=150)
-    plt.show()
-    print(f"Saved per-source histograms -> {out}")
+    _plot_error_histograms(dx, dy, e, xlim_max, euclid_max, bins, bar_width, "MAP", out)
+
+    zoom_xlim_max = 5
+    zoom_euclid_max = 8
+    out_zoom = os.path.join(SAVE_DIR, f"histograms_from_xy_{tag}_zoom.png")
+    _plot_error_histograms(dx, dy, e, zoom_xlim_max, zoom_euclid_max, bins, bar_width, "MAP - Zoomed", out_zoom)
 
 
 def plot_training_history(history: keras.callbacks.History, tag: str = "train_history"):
