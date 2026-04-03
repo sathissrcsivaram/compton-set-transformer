@@ -2,6 +2,7 @@ import os
 import json
 import math
 import random
+import sys
 from pathlib import Path
 from typing import Tuple, Dict, List
 
@@ -44,6 +45,8 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 
 BEST_WEIGHTS = os.path.join(SAVE_DIR, "best.weights.h5")
 FINAL_WEIGHTS = os.path.join(SAVE_DIR, "final.weights.h5")
+TRAINING_LOG = os.path.join(SAVE_DIR, "training_log.txt")
+RUN_SUMMARY = os.path.join(SAVE_DIR, "run_summary.txt")
 
 RANDOM_SEED = 42
 TRAIN_FRAC, VAL_FRAC, TEST_FRAC = 0.70, 0.15, 0.15
@@ -103,6 +106,43 @@ def resolve_cmap(preferred: str = "mako"):
 
 
 CMAP = resolve_cmap("mako")
+
+
+class TeeStream:
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data):
+        for stream in self.streams:
+            stream.write(data)
+        return len(data)
+
+    def flush(self):
+        for stream in self.streams:
+            stream.flush()
+
+
+_ORIGINAL_STDOUT = sys.stdout
+_ORIGINAL_STDERR = sys.stderr
+_LOG_HANDLE = None
+
+
+def setup_log_capture():
+    global _LOG_HANDLE
+    _LOG_HANDLE = open(TRAINING_LOG, "w", encoding="utf-8")
+    sys.stdout = TeeStream(_ORIGINAL_STDOUT, _LOG_HANDLE)
+    sys.stderr = TeeStream(_ORIGINAL_STDERR, _LOG_HANDLE)
+    print(f"Training log -> {TRAINING_LOG}")
+
+
+def restore_log_capture():
+    global _LOG_HANDLE
+    sys.stdout = _ORIGINAL_STDOUT
+    sys.stderr = _ORIGINAL_STDERR
+    if _LOG_HANDLE is not None:
+        _LOG_HANDLE.flush()
+        _LOG_HANDLE.close()
+        _LOG_HANDLE = None
 
 # =========================
 # Reproducibility
@@ -583,6 +623,15 @@ def print_source_metrics_xy(pred_xy: np.ndarray, true_xy: np.ndarray, label: str
     print(f"MAE_y: {mae_y:.4f}")
     print(f"MAE_euclid: {mae_e:.4f}")
     print(f"R^2_x: {r2['R2_x']:.4f} | R^2_y: {r2['R2_y']:.4f} | R^2_joint_xy: {r2['R2_joint_xy']:.4f}")
+    return {
+        "label": label,
+        "MAE_x": mae_x,
+        "MAE_y": mae_y,
+        "MAE_euclid": mae_e,
+        "R2_x": r2["R2_x"],
+        "R2_y": r2["R2_y"],
+        "R2_joint_xy": r2["R2_joint_xy"],
+    }
 
 
 def print_source_metrics_from_maps(prob_maps: np.ndarray, true_xy: np.ndarray, label: str):
@@ -597,6 +646,15 @@ def print_source_metrics_from_maps(prob_maps: np.ndarray, true_xy: np.ndarray, l
     print(f"MAE_y: {mae_y:.4f}")
     print(f"MAE_euclid: {mae_e:.4f}")
     print(f"R^2_x: {r2['R2_x']:.4f} | R^2_y: {r2['R2_y']:.4f} | R^2_joint_xy: {r2['R2_joint_xy']:.4f}")
+    return {
+        "label": label,
+        "MAE_x": mae_x,
+        "MAE_y": mae_y,
+        "MAE_euclid": mae_e,
+        "R2_x": r2["R2_x"],
+        "R2_y": r2["R2_y"],
+        "R2_joint_xy": r2["R2_joint_xy"],
+    }
 
 
 def plot_per_source_heatmap(source_ids: List[str], true_xy: np.ndarray, prob_maps: np.ndarray, tag: str):
@@ -757,11 +815,74 @@ def plot_gt_vs_pred_side_by_side(source_ids: List[str],
 
     print(f"Saved GT vs Pred side-by-side figures -> {outdir}")
 
+
+def best_epoch_from_history(history_dict: Dict[str, List[float]]) -> int | None:
+    val_loss = history_dict.get("val_loss")
+    if not val_loss:
+        return None
+    return int(np.argmin(val_loss) + 1)
+
+
+def write_run_summary(
+    history_dict: Dict[str, List[float]],
+    metrics_expectation: Dict[str, float],
+    metrics_map: Dict[str, float],
+    predictions_csv: str,
+):
+    best_epoch = best_epoch_from_history(history_dict)
+    best_val_loss = min(history_dict["val_loss"]) if history_dict.get("val_loss") else None
+    lines = [
+        "Compton Set Transformer Run Summary",
+        "===================================",
+        f"CSV_PATH: {CSV_PATH}",
+        f"SAVE_DIR: {SAVE_DIR}",
+        f"MAX_EVENTS: {MAX_EVENTS}",
+        f"EPOCHS_REQUESTED: {EPOCHS}",
+        f"EPOCHS_RUN: {len(history_dict.get('loss', []))}",
+        f"BEST_EPOCH: {best_epoch if best_epoch is not None else 'N/A'}",
+        f"BEST_VAL_LOSS: {best_val_loss:.6f}" if best_val_loss is not None else "BEST_VAL_LOSS: N/A",
+        f"FINAL_TRAIN_LOSS: {history_dict['loss'][-1]:.6f}" if history_dict.get("loss") else "FINAL_TRAIN_LOSS: N/A",
+        f"FINAL_VAL_LOSS: {history_dict['val_loss'][-1]:.6f}" if history_dict.get("val_loss") else "FINAL_VAL_LOSS: N/A",
+        "",
+        f"Expectation Metrics [{metrics_expectation['label']}]",
+        f"MAE_x: {metrics_expectation['MAE_x']:.4f}",
+        f"MAE_y: {metrics_expectation['MAE_y']:.4f}",
+        f"MAE_euclid: {metrics_expectation['MAE_euclid']:.4f}",
+        f"R2_x: {metrics_expectation['R2_x']:.4f}",
+        f"R2_y: {metrics_expectation['R2_y']:.4f}",
+        f"R2_joint_xy: {metrics_expectation['R2_joint_xy']:.4f}",
+        "",
+        f"MAP Metrics [{metrics_map['label']}]",
+        f"MAE_x: {metrics_map['MAE_x']:.4f}",
+        f"MAE_y: {metrics_map['MAE_y']:.4f}",
+        f"MAE_euclid: {metrics_map['MAE_euclid']:.4f}",
+        f"R2_x: {metrics_map['R2_x']:.4f}",
+        f"R2_y: {metrics_map['R2_y']:.4f}",
+        f"R2_joint_xy: {metrics_map['R2_joint_xy']:.4f}",
+        "",
+        "Artifacts",
+        f"history.json: {os.path.join(SAVE_DIR, 'history.json')}",
+        f"meta.json: {os.path.join(SAVE_DIR, 'meta.json')}",
+        f"training_curves.png: {os.path.join(SAVE_DIR, 'training_curves.png')}",
+        f"best.weights.h5: {BEST_WEIGHTS}",
+        f"final.weights.h5: {FINAL_WEIGHTS}",
+        f"predictions_test_map.csv: {predictions_csv}",
+        f"histograms_from_maps_test.png: {os.path.join(SAVE_DIR, 'histograms_from_maps_test.png')}",
+        f"histograms_from_maps_test_zoom.png: {os.path.join(SAVE_DIR, 'histograms_from_maps_test_zoom.png')}",
+        f"histograms_from_xy_test_map.png: {os.path.join(SAVE_DIR, 'histograms_from_xy_test_map.png')}",
+        f"histograms_from_xy_test_map_zoom.png: {os.path.join(SAVE_DIR, 'histograms_from_xy_test_map_zoom.png')}",
+        f"training_log.txt: {TRAINING_LOG}",
+    ]
+    with open(RUN_SUMMARY, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"Saved run summary -> {RUN_SUMMARY}")
+
 # =========================
 # Main
 # =========================
 
 def main():
+    setup_log_capture()
     # Load
     df = pd.read_csv(CSV_PATH)
     missing = [c for c in RAW_COLS if c not in df.columns]
@@ -837,7 +958,7 @@ def main():
         p_test = model.predict({"events": X_test, "mask": M_test}, batch_size=BATCH_SIZE, verbose=0)
 
     # Metrics (using expected coordinates from predicted distributions)
-    print_source_metrics_from_maps(p_test, xy_test, label="heatmap_model (E[x,y] from map)")
+    metrics_expectation = print_source_metrics_from_maps(p_test, xy_test, label="heatmap_model (E[x,y] from map)")
 
     # === New: Side-by-side GT vs Predicted heatmaps per test source ===
     plot_gt_vs_pred_side_by_side(sid_test, xy_test, p_test, tag="test", limit=None)
@@ -849,7 +970,7 @@ def main():
 
     # --- MAP estimates ---
     xy_test_map = maps_to_xy(p_test, subpixel=True)
-    print_source_metrics_xy(xy_test_map, xy_test, label="heatmap_model (MAP, subpixel)")
+    metrics_map = print_source_metrics_xy(xy_test_map, xy_test, label="heatmap_model (MAP, subpixel)")
     plot_histograms_from_xy(xy_test, xy_test_map, tag="test_map",
                             xlim_max=50, euclid_max=70.71,
                             bins=N_BINS_HIST, bar_width=0.9)
@@ -885,8 +1006,8 @@ def main():
     print(f"Artifacts saved in: {SAVE_DIR}")
 
     # Optional: export MAP/Expectation CSV for TEST
+    csv_path = os.path.join(SAVE_DIR, "predictions_test_map.csv")
     try:
-        csv_path = os.path.join(SAVE_DIR, "predictions_test_map.csv")
         exy = np.vstack([expected_xy_from_map(p) for p in p_test])
         with open(csv_path, "w", newline="") as f:
             w = csv.writer(f)
@@ -897,8 +1018,12 @@ def main():
     except Exception as e:
         print(f"Could not save predictions CSV: {e}")
 
+    write_run_summary(history.history, metrics_expectation, metrics_map, csv_path)
     print("Done")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        restore_log_capture()
