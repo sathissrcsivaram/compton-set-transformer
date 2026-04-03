@@ -29,6 +29,8 @@ source_*.png
 # Generated reports and derived media
 pdf or html/*.pdf
 pdf or html/*.png
+pdf or html/*.html
+generate_architecture_workflow.py
 
 # Python cache
 generate_events/__pycache__/
