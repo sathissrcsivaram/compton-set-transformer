@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Transformermodel Model Explanation Report</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 0.75in;
+    }
+    body {
+      font-family: "Liberation Serif", Georgia, serif;
+      color: #111;
+      line-height: 1.45;
+      font-size: 11pt;
+    }
+    h1, h2, h3 {
+      font-family: "Liberation Sans", Arial, sans-serif;
+      color: #12273f;
+    }
+    h1 {
+      font-size: 22pt;
+      margin-bottom: 0.2em;
+      border-bottom: 2px solid #12273f;
+      padding-bottom: 8px;
+    }
+    h2 {
+      font-size: 15pt;
+      margin-top: 1.2em;
+      margin-bottom: 0.3em;
+    }
+    h3 {
+      font-size: 12pt;
+      margin-top: 0.9em;
+      margin-bottom: 0.2em;
+    }
+    p {
+      margin: 0.35em 0;
+    }
+    ul {
+      margin-top: 0.25em;
+      margin-bottom: 0.45em;
+    }
+    li {
+      margin: 0.18em 0;
+    }
+    .mono {
+      font-family: "Liberation Mono", monospace;
+      font-size: 10pt;
+      background: #f3f5f7;
+      padding: 0.06em 0.25em;
+    }
+    .block {
+      font-family: "Liberation Mono", monospace;
+      font-size: 9.8pt;
+      white-space: pre-wrap;
+      background: #f5f7f9;
+      border: 1px solid #d9dfe5;
+      padding: 10px 12px;
+      margin: 0.4em 0 0.7em 0;
+    }
+    .note {
+      background: #eef5fb;
+      border-left: 4px solid #4f7fb0;
+      padding: 8px 12px;
+      margin: 0.5em 0;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 0.4em;
+      margin-bottom: 0.7em;
+    }
+    th, td {
+      border: 1px solid #d2dae2;
+      padding: 8px 10px;
+      vertical-align: top;
+    }
+    th {
+      background: #eef3f8;
+      text-align: left;
+      font-family: "Liberation Sans", Arial, sans-serif;
+    }
+    .muted {
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+  <h1>Transformermodel Model Explanation Report</h1>
+  <p class="muted">Detailed professor-facing explanation of the architecture, loss, activations, metrics, training strategy, and design choices used in <span class="mono">train_compton_set_transformer.py</span>.</p>
+
+  <h2>1. What This Model Is Solving</h2>
+  <p>
+    This model estimates the source location of a Compton event set. Instead of predicting a single coordinate directly,
+    it predicts a <strong>probability distribution over a 2D grid</strong>. In the code, the final output is a flattened
+    <span class="mono">50 x 50 = 2500</span> cell heatmap. Each source is therefore represented by a spatial probability map.
+  </p>
+  <p>
+    The model input is not one event but a <strong>set of events belonging to one source</strong>. This is important because
+    event order is not inherently meaningful. For that reason, the design is closer to a DeepSets / Set Transformer style
+    model than to a simple sequence model.
+  </p>
+
+  <h2>2. End-to-End Workflow</h2>
+  <ol>
+    <li>The CSV is loaded from Google Drive.</li>
+    <li>Relevant columns are checked and <span class="mono">Theta</span> is converted to radians.</li>
+    <li>Rows are grouped by source using a combined <span class="mono">source_id</span>.</li>
+    <li>Sources are split into train, validation, and test sets.</li>
+    <li>A 2D prediction grid is built from the training set only.</li>
+    <li>Each source is converted into padded event tensors, masks, and a target Gaussian heatmap.</li>
+    <li>The set model processes the event set and outputs a 2500-dimensional heatmap.</li>
+    <li>The model is trained with a distribution-matching loss.</li>
+    <li>The best weights are restored and evaluated with MAE and R² on source coordinates.</li>
+  </ol>
+
+  <h2>3. Input Data and Why These Features Are Used</h2>
+  <p>The model uses these six event-level input features:</p>
+  <div class="block">FEATURE_COLS = ["Scatter_X", "Scatter_Y", "Absorb_X", "Absorb_Y", "Theta", "Energy"]</div>
+  <p>Why these were chosen:</p>
+  <ul>
+    <li><span class="mono">Scatter_X</span> and <span class="mono">Scatter_Y</span> encode where the scattering interaction happened.</li>
+    <li><span class="mono">Absorb_X</span> and <span class="mono">Absorb_Y</span> encode where absorption happened.</li>
+    <li><span class="mono">Theta</span> contains angular information related to the Compton scattering geometry.</li>
+    <li><span class="mono">Energy</span> carries physical information that helps disambiguate event patterns.</li>
+  </ul>
+  <p>
+    These features jointly describe the geometry and physics of each event. They are more informative than using only
+    positions or only energy. The target is not per-event; the target is the source coordinate shared by all events in a source group.
+  </p>
+
+  <h2>4. Why Split by Source Instead of by Row</h2>
+  <p>
+    The code builds a <span class="mono">source_id</span> using <span class="mono">Source_X</span>, <span class="mono">Source_Y</span>,
+    and <span class="mono">Source_Z</span>, and then splits by source. This is a very important design choice.
+  </p>
+  <p>Why it matters:</p>
+  <ul>
+    <li>If rows were randomly split, events from the same source could appear in both train and test sets.</li>
+    <li>That would create data leakage and make performance look better than it really is.</li>
+    <li>By splitting by source, the model must generalize to unseen sources rather than memorize source-specific patterns.</li>
+  </ul>
+
+  <h2>5. Why Use a Heatmap Target Instead of Direct Coordinate Regression</h2>
+  <p>
+    The true source coordinate is converted into a Gaussian heatmap on a 2D grid. This means the model predicts
+    a full spatial distribution instead of only one point estimate.
+  </p>
+  <p>Reasons for this choice:</p>
+  <ul>
+    <li>Heatmap prediction is more stable than direct regression when uncertainty or ambiguity exists.</li>
+    <li>A Gaussian target gives the model a smooth learning signal around the true coordinate rather than a single hard point.</li>
+    <li>The output can later be interpreted in multiple ways: expectation <span class="mono">E[x,y]</span>, MAP, or uncertainty spread.</li>
+    <li>This fits the physical interpretation better because localization often has uncertainty, not just one exact point.</li>
+  </ul>
+  <div class="note">
+    If the professor asks “why not regress x and y directly?”, the answer is:
+    direct regression gives only one point, while the heatmap retains spatial uncertainty structure and provides a richer training signal.
+  </div>
+
+  <h2>6. Grid Construction and Why It Uses the Training Set Only</h2>
+  <p>
+    The heatmap grid is computed from the training set only, with 5% padding on each axis. This avoids using information
+    from validation or test targets during target construction.
+  </p>
+  <p>Why this is good practice:</p>
+  <ul>
+    <li>It avoids target leakage.</li>
+    <li>It makes evaluation more honest.</li>
+    <li>The 5% padding prevents edge clipping when sources are near the observed minimum or maximum positions.</li>
+  </ul>
+
+  <h2>7. Padding, Truncation, and the Mask</h2>
+  <p>
+    Each source can have a different number of events. Neural networks prefer fixed-size tensors, so each source is padded or truncated
+    to <span class="mono">MAX_EVENTS = 3000</span>.
+  </p>
+  <p>The mask is crucial because:</p>
+  <ul>
+    <li>Padded zeros are not real events.</li>
+    <li>The mask tells the model which entries are valid and which are padding.</li>
+    <li>Attention pooling and ISAB use this mask so the model does not learn from fake padded events.</li>
+  </ul>
+  <p>
+    Without a mask, the model could interpret padded zeros as real physical events, which would hurt performance.
+  </p>
+
+  <h2>8. Layer-by-Layer Architecture Explanation</h2>
+
+  <h3>8.1 Input Layers</h3>
+  <div class="block">events_in = keras.Input(shape=(max_events, feat_dim), name="events")
+mask_in   = keras.Input(shape=(max_events,), dtype="bool", name="mask")</div>
+  <p>
+    Two inputs are used because the model needs both the event features and the validity mask. This separation is cleaner
+    than embedding validity as another numeric feature.
+  </p>
+
+  <h3>8.2 Normalization Layer</h3>
+  <div class="block">norm = KerasNormalization(axis=-1, name="normalize")</div>
+  <p>
+    This layer standardizes the input features. Different features may have different scales, for example coordinates,
+    angles, and energies. Normalization prevents large-scale features from dominating the gradients.
+  </p>
+  <p>Why chosen:</p>
+  <ul>
+    <li>Improves optimization stability.</li>
+    <li>Makes learning rate behavior more predictable.</li>
+    <li>Reduces sensitivity to raw feature units.</li>
+  </ul>
+  <p>
+    It is adapted on the training tensor only, which is correct practice.
+  </p>
+
+  <h3>8.3 Shared Dense Event Encoder</h3>
+  <p>
+    The event encoder applies the same dense network to every event. This is a standard set-model idea:
+    each element is first transformed individually before set-level interaction is added.
+  </p>
+  <div class="block">EVENT_HIDDEN = [256, 256, 128]</div>
+  <p>There are three residual event blocks.</p>
+
+  <table>
+    <tr>
+      <th>Block</th>
+      <th>Main Components</th>
+      <th>Purpose</th>
+    </tr>
+    <tr>
+      <td>Block 1</td>
+      <td>Dense 256 -> GELU -> Dropout -> Dense 256 -> LayerNorm + residual projection</td>
+      <td>Lift the raw 6-D feature vector into a richer latent space.</td>
+    </tr>
+    <tr>
+      <td>Block 2</td>
+      <td>Dense 256 -> GELU -> Dropout -> Dense 256 -> LayerNorm + residual</td>
+      <td>Refine event representation while keeping width stable.</td>
+    </tr>
+    <tr>
+      <td>Block 3</td>
+      <td>Dense 128 -> GELU -> Dropout -> Dense 128 -> LayerNorm + residual projection</td>
+      <td>Compress the event representation to a more efficient attention width.</td>
+    </tr>
+  </table>
+
+  <p>Why dense layers are appropriate here:</p>
+  <ul>
+    <li>Each event is represented as a fixed feature vector, so a shared MLP is a natural first-stage encoder.</li>
+    <li>It is simpler and cheaper than attention at the earliest stage.</li>
+    <li>It lets the model learn nonlinear combinations of coordinates, angle, and energy before cross-event reasoning.</li>
+  </ul>
+
+  <h3>8.4 Why Residual Connections Are Used</h3>
+  <p>
+    Residual connections help preserve information and make deeper models easier to optimize. Instead of forcing every block to learn
+    a complete new representation, the block only needs to learn a useful correction to the previous representation.
+  </p>
+  <p>Why chosen over plain stacked layers:</p>
+  <ul>
+    <li>Improves gradient flow.</li>
+    <li>Reduces degradation when depth increases.</li>
+    <li>Allows the network to keep useful low-level information while learning higher-level features.</li>
+  </ul>
+
+  <h3>8.5 Why GELU Activation Is Used</h3>
+  <p>
+    The model uses GELU when <span class="mono">USE_GELU = True</span>. GELU is smoother than ReLU and is commonly used in Transformer-style models.
+  </p>
+  <p>Why GELU instead of ReLU:</p>
+  <ul>
+    <li>GELU is smoother and less abrupt than hard-threshold ReLU.</li>
+    <li>It often works well in attention-based architectures.</li>
+    <li>It can provide slightly better representational flexibility for continuous-valued scientific data.</li>
+  </ul>
+  <p>
+    ReLU would also be valid, but GELU is a more modern default for Transformer-like networks.
+  </p>
+
+  <h3>8.6 Why Dropout Is Used</h3>
+  <p>
+    Dropout with <span class="mono">DROPOUT = 0.10</span> is used in multiple places. Its purpose is regularization.
+  </p>
+  <p>Why chosen:</p>
+  <ul>
+    <li>Reduces overfitting.</li>
+    <li>Encourages more robust hidden representations.</li>
+    <li>Later supports MC Dropout for uncertainty estimation during inference.</li>
+  </ul>
+  <p>
+    This is one of the more important “why used here?” answers: the same mechanism helps both regularization and approximate uncertainty estimation.
+  </p>
+
+  <h3>8.7 Why Layer Normalization Is Used</h3>
+  <p>
+    Layer normalization is applied inside residual blocks and the attention block. It stabilizes activations and is especially common in
+    attention-based architectures.
+  </p>
+  <p>Why LayerNorm instead of BatchNorm inside the set/attention part:</p>
+  <ul>
+    <li>LayerNorm is less dependent on batch statistics.</li>
+    <li>It is usually more natural for Transformers and variable-structure inputs.</li>
+    <li>BatchNorm can be less ideal when sequence/set masking and variable event counts are involved.</li>
+  </ul>
+
+  <h3>8.8 ISAB: Induced Set Attention Block</h3>
+  <p>
+    This is one of the core architectural choices. The model does not use full self-attention over all events directly.
+    Instead it uses an <strong>Induced Set Attention Block (ISAB)</strong>.
+  </p>
+  <div class="block">x = ISAB(d_model=units, num_heads=4, m=128, dropout=0.10)(x, mask_in)</div>
+  <p>How ISAB works conceptually:</p>
+  <ol>
+    <li>Learn a set of inducing points.</li>
+    <li>Let the inducing points attend to the event set.</li>
+    <li>Let the event set attend back to the induced summary.</li>
+  </ol>
+  <p>Why ISAB was chosen instead of full self-attention:</p>
+  <ul>
+    <li>Full self-attention scales poorly with long sets because it is quadratic in the number of events.</li>
+    <li>Here <span class="mono">MAX_EVENTS = 3000</span>, which makes full self-attention expensive.</li>
+    <li>ISAB reduces complexity by routing interaction through <span class="mono">m = 128</span> inducing points.</li>
+    <li>It preserves set-level interaction while remaining computationally practical.</li>
+  </ul>
+  <p>
+    This is one of the strongest justifications in the architecture. If asked “why ISAB?”, the short answer is:
+    <strong>to model event-to-event relationships efficiently without the full cost of quadratic self-attention.</strong>
+  </p>
+
+  <h3>8.9 Why Multi-Head Attention Is Used</h3>
+  <p>
+    Multi-head attention allows the model to attend to different interaction patterns in parallel. Different heads can focus on
+    different relational structures among events.
+  </p>
+  <p>Why 4 heads:</p>
+  <ul>
+    <li>Provides multi-view relational modeling.</li>
+    <li>Keeps the attention block expressive without being too expensive.</li>
+    <li>Matches the compressed latent width of 128 reasonably well.</li>
+  </ul>
+
+  <h3>8.10 Feed-Forward Networks Inside ISAB</h3>
+  <p>
+    After each attention step, a feed-forward network is applied. This follows the standard Transformer block pattern:
+    attention mixes information across elements, and the feed-forward network adds nonlinear feature transformation.
+  </p>
+  <p>
+    The code uses width expansion to <span class="mono">4 * d_model</span>, which is also standard Transformer practice.
+  </p>
+
+  <h3>8.11 Why Attention Pooling Is Used</h3>
+  <p>
+    After ISAB, the model still has one embedding per event. These must be aggregated into one source-level representation.
+    Instead of simple average pooling, the model uses <strong>attention pooling</strong>.
+  </p>
+  <p>Why attention pooling instead of mean pooling:</p>
+  <ul>
+    <li>Not all events are equally informative.</li>
+    <li>Attention pooling allows the model to assign higher weight to more useful events.</li>
+    <li>Masking ensures padded events receive no weight.</li>
+  </ul>
+  <p>
+    Mean pooling is simpler and permutation-invariant, but attention pooling is more selective and usually more expressive.
+  </p>
+
+  <h3>8.12 Why Event Count Is Added as an Extra Feature</h3>
+  <p>
+    The model explicitly appends the normalized number of valid events:
+  </p>
+  <div class="block">count_feat = sum(mask) / MAX_EVENTS</div>
+  <p>Why this helps:</p>
+  <ul>
+    <li>The number of observed events may itself carry information about confidence or source characteristics.</li>
+    <li>Two sources with similar pooled embeddings but very different event counts may deserve different predictions.</li>
+    <li>Adding this as an explicit feature is cheap and interpretable.</li>
+  </ul>
+
+  <h3>8.13 Prediction Head</h3>
+  <p>
+    The pooled representation plus event count is processed by two dense layers before the final heatmap output.
+  </p>
+  <p>Purpose of this head:</p>
+  <ul>
+    <li>Convert the source-level latent embedding into a spatial probability map.</li>
+    <li>Provide final nonlinear transformation capacity after set aggregation.</li>
+    <li>Separate the source summarization stage from the output distribution stage.</li>
+  </ul>
+
+  <h3>8.14 Final Softmax Heatmap Layer</h3>
+  <div class="block">outputs = layers.Dense(HEATMAP_H * HEATMAP_W, activation="softmax", name="heatmap")(z)</div>
+  <p>
+    Softmax ensures the output is a valid probability distribution over the 2500 cells.
+  </p>
+  <p>Why softmax instead of linear output:</p>
+  <ul>
+    <li>The target heatmap sums to 1.</li>
+    <li>Softmax enforces nonnegative probabilities that sum to 1.</li>
+    <li>That makes KL divergence and cross-entropy style comparisons meaningful.</li>
+  </ul>
+
+  <h2>9. Loss Function: What It Is and Why It Was Chosen</h2>
+  <p>
+    The training loss is a KL-divergence style loss between the target heatmap and the predicted heatmap.
+  </p>
+  <div class="block">kl_loss(y_true, y_pred) = mean(sum(y_true * (log(y_true) - log(y_pred))))</div>
+  <p>Why this is a good choice:</p>
+  <ul>
+    <li>The model output is a probability distribution, not just a point estimate.</li>
+    <li>KL divergence is designed to compare probability distributions.</li>
+    <li>It penalizes probability mass placed far from the target distribution.</li>
+    <li>It encourages the predicted heatmap to match the full shape of the target Gaussian heatmap.</li>
+  </ul>
+
+  <h3>9.1 Why Not Mean Squared Error for the Main Loss</h3>
+  <p>
+    Mean Squared Error (MSE) is a common loss for coordinate regression, but it is not the best main loss for this specific setup.
+  </p>
+  <p>Why MSE was not chosen as the main loss here:</p>
+  <ul>
+    <li>The target is a distribution over 2500 cells, not just two scalar coordinates.</li>
+    <li>MSE treats all output dimensions independently and does not naturally respect the “sum to one” probability structure.</li>
+    <li>KL divergence is more meaningful when both target and prediction are probability distributions.</li>
+  </ul>
+  <div class="note">
+    If asked “what is MSE and why not use it?”, answer:
+    MSE measures squared numeric error, which is excellent for direct scalar regression, but this model predicts a probability distribution,
+    so KL divergence is a more natural match than MSE.
+  </div>
+
+  <h3>9.2 Why Categorical Cross-Entropy Appears in the Logs</h3>
+  <p>
+    The code compiles the model with <span class="mono">metrics=["categorical_crossentropy"]</span>. This is used as a diagnostic metric,
+    not as the optimized loss. It provides another distribution-matching view that is easy to monitor during training.
+  </p>
+
+  <h2>10. Optimizer and Training Choices</h2>
+
+  <h3>10.1 Adam Optimizer</h3>
+  <div class="block">keras.optimizers.Adam(LEARNING_RATE, clipnorm=1.0)</div>
+  <p>Why Adam is used:</p>
+  <ul>
+    <li>It adapts learning rates per parameter.</li>
+    <li>It is strong for deep nonlinear models and attention-based networks.</li>
+    <li>It is a practical default when feature scales and gradient patterns vary.</li>
+  </ul>
+
+  <h3>10.2 Why Gradient Clipping Is Used</h3>
+  <p>
+    <span class="mono">clipnorm=1.0</span> is used to control large gradients. This can improve stability, especially with attention layers and long inputs.
+  </p>
+
+  <h3>10.3 Early Stopping</h3>
+  <p>
+    Early stopping is configured with <span class="mono">patience=7</span>. This prevents unnecessary training after validation loss stops improving.
+  </p>
+  <p>Why chosen:</p>
+  <ul>
+    <li>Reduces overfitting.</li>
+    <li>Saves training time.</li>
+    <li>Restores the best weights automatically.</li>
+  </ul>
+
+  <h3>10.4 ReduceLROnPlateau</h3>
+  <p>
+    This callback lowers the learning rate if validation loss stalls. The purpose is to allow finer convergence after the initial faster learning phase.
+  </p>
+
+  <h3>10.5 ModelCheckpoint</h3>
+  <p>
+    The best validation model is saved to <span class="mono">best.weights.h5</span>. This ensures that evaluation uses the strongest observed model, not just the final epoch.
+  </p>
+
+  <h3>10.6 Stochastic Weight Averaging</h3>
+  <p>
+    The code tries to add Stochastic Weight Averaging when available. SWA can improve generalization by averaging multiple solutions found during training.
+  </p>
+
+  <h2>11. Why MC Dropout Is Used at Inference</h2>
+  <p>
+    The code performs <span class="mono">MC_DROPOUT_PASSES = 10</span> stochastic forward passes during evaluation.
+  </p>
+  <p>Purpose:</p>
+  <ul>
+    <li>Approximate predictive uncertainty without changing the main model design.</li>
+    <li>Average multiple stochastic predictions to get a smoother and often more robust heatmap.</li>
+    <li>Exploit the fact that dropout can be interpreted as approximate Bayesian inference at test time.</li>
+  </ul>
+  <p>
+    This is a useful answer if the professor asks why dropout was kept active during inference.
+  </p>
+
+  <h2>12. How Final Coordinates Are Extracted from the Heatmap</h2>
+
+  <h3>12.1 Expected Coordinate E[x, y]</h3>
+  <p>
+    One evaluation mode computes the expected x and y values from the full probability map. This uses all probability mass, not just the single most likely cell.
+  </p>
+  <p>Why useful:</p>
+  <ul>
+    <li>Smoother estimate.</li>
+    <li>Uses the full distribution.</li>
+    <li>Often less noisy than hard argmax.</li>
+  </ul>
+
+  <h3>12.2 MAP Estimate</h3>
+  <p>
+    The Maximum A Posteriori (MAP) estimate uses the highest-probability grid cell. This gives the single most likely discrete location.
+  </p>
+
+  <h3>12.3 Subpixel Refinement</h3>
+  <p>
+    The code refines the MAP estimate using a local parabolic fit around the peak. This helps overcome grid discretization.
+  </p>
+  <p>Why useful:</p>
+  <ul>
+    <li>The heatmap grid is discrete, but the true source coordinate is continuous.</li>
+    <li>Subpixel refinement improves precision without increasing the grid size.</li>
+  </ul>
+
+  <h2>13. Metrics and Why They Matter</h2>
+
+  <h3>13.1 MAE_x and MAE_y</h3>
+  <p>
+    Mean Absolute Error in x and y measures the average absolute localization error along each axis.
+  </p>
+  <p>Why useful:</p>
+  <ul>
+    <li>Easy to interpret in physical units.</li>
+    <li>Shows whether one axis is systematically harder than the other.</li>
+  </ul>
+
+  <h3>13.2 Euclidean MAE</h3>
+  <p>
+    This is the average straight-line localization error between predicted and true source coordinates.
+    It is usually the most intuitive single-number localization metric.
+  </p>
+
+  <h3>13.3 R² in x, y, and Joint XY</h3>
+  <p>
+    R² measures how well predictions explain the variance in the true coordinates.
+  </p>
+  <p>Why R² is useful here:</p>
+  <ul>
+    <li>It gives a regression-quality interpretation in addition to absolute error.</li>
+    <li>It shows whether predictions follow the trend of the true source positions well.</li>
+    <li>The joint XY version evaluates both coordinates together.</li>
+  </ul>
+
+  <h3>13.4 Mean Squared Error: What It Means Even Though It Is Not Used Here</h3>
+  <p>
+    Mean Squared Error (MSE) is the average of squared differences between prediction and target.
+    It penalizes large errors more strongly than MAE.
+  </p>
+  <p>Why professors ask about it:</p>
+  <ul>
+    <li>It is one of the most common regression losses and metrics.</li>
+    <li>It is mathematically convenient and differentiable.</li>
+    <li>It is often used when predicting continuous scalar outputs directly.</li>
+  </ul>
+  <p>Why this model reports MAE and R² instead:</p>
+  <ul>
+    <li>MAE is directly interpretable in source-position units.</li>
+    <li>R² shows explanatory quality.</li>
+    <li>The training target is a heatmap distribution, so KL-based training is more natural than MSE-based training.</li>
+  </ul>
+
+  <h2>14. Why This Is a Set Model Rather Than an RNN or Plain CNN</h2>
+  <p>
+    The input is fundamentally a set of events per source. Event order is not the physical signal of interest.
+  </p>
+  <p>Why not an RNN:</p>
+  <ul>
+    <li>RNNs assume ordered sequential dependence.</li>
+    <li>That assumption is weak or artificial here.</li>
+  </ul>
+  <p>Why not a plain CNN over the event list:</p>
+  <ul>
+    <li>A CNN would impose local neighborhood assumptions along event index order.</li>
+    <li>Those neighborhoods are not physically meaningful unless event order itself has meaning.</li>
+  </ul>
+  <p>Why a set architecture fits better:</p>
+  <ul>
+    <li>It is permutation-aware or permutation-invariant where needed.</li>
+    <li>It allows event-level encoding plus cross-event interaction plus global pooling.</li>
+    <li>It naturally handles variable event counts using masking.</li>
+  </ul>
+
+  <h2>15. Important Regularization and Stability Choices</h2>
+  <ul>
+    <li><span class="mono">L2 = 1e-6</span>: mild weight decay to discourage unnecessarily large weights.</li>
+    <li><span class="mono">DROPOUT = 0.10</span>: regularization plus MC Dropout support.</li>
+    <li><span class="mono">LayerNorm</span>: stabilizes attention and residual blocks.</li>
+    <li><span class="mono">Gradient clipping</span>: prevents unstable updates.</li>
+    <li><span class="mono">Early stopping</span>: prevents overtraining after validation performance plateaus.</li>
+  </ul>
+
+  <h2>16. Important Practical Outputs of the Model</h2>
+  <ul>
+    <li><span class="mono">best.weights.h5</span>: best validation model.</li>
+    <li><span class="mono">final.weights.h5</span>: final saved model weights.</li>
+    <li><span class="mono">training_curves.png</span>: train/validation loss over epochs.</li>
+    <li><span class="mono">histograms_from_maps_test.png</span>: error histograms using expectation-based coordinates.</li>
+    <li><span class="mono">histograms_from_xy_test_map.png</span>: error histograms using MAP coordinates.</li>
+    <li><span class="mono">predictions_test_map.csv</span>: per-source predictions and comparisons.</li>
+  </ul>
+
+  <h2>17. Short “Why This, Not That?” Answers for Oral Questions</h2>
+  <table>
+    <tr>
+      <th>Professor’s likely question</th>
+      <th>Short answer</th>
+    </tr>
+    <tr>
+      <td>Why use a heatmap instead of direct x-y regression?</td>
+      <td>A heatmap captures uncertainty and gives a richer spatial learning signal than a single point estimate.</td>
+    </tr>
+    <tr>
+      <td>Why KL divergence instead of MSE?</td>
+      <td>The output is a probability distribution over a grid, so KL divergence is more appropriate than scalar regression loss.</td>
+    </tr>
+    <tr>
+      <td>Why ISAB?</td>
+      <td>It models interactions among many events more efficiently than full self-attention.</td>
+    </tr>
+    <tr>
+      <td>Why attention pooling instead of average pooling?</td>
+      <td>Because some events are more informative than others, and attention learns how much each event should contribute.</td>
+    </tr>
+    <tr>
+      <td>Why GELU?</td>
+      <td>It is a smooth modern activation that often works well in Transformer-like models.</td>
+    </tr>
+    <tr>
+      <td>Why LayerNorm instead of BatchNorm in the attention stack?</td>
+      <td>LayerNorm is better suited to Transformer-style architectures and less dependent on batch statistics.</td>
+    </tr>
+    <tr>
+      <td>Why dropout?</td>
+      <td>It regularizes training and also enables MC Dropout uncertainty estimation at inference time.</td>
+    </tr>
+    <tr>
+      <td>Why split by source?</td>
+      <td>To avoid leakage and ensure evaluation is on unseen sources, not unseen rows from the same source.</td>
+    </tr>
+  </table>
+
+  <h2>18. Final Summary</h2>
+  <p>
+    This model is a set-based attention architecture for source localization. It converts each source’s event set into a learned
+    latent representation, models relationships among events using ISAB, aggregates the set using attention pooling, and predicts
+    a 2D probability heatmap rather than only a point coordinate. The use of a heatmap target, KL-divergence loss, attention-based
+    aggregation, masking, and MC Dropout all serve a common goal: stable and physically meaningful source localization from variable-sized event sets.
+  </p>
+</body>
+</html>

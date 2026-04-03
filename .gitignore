@@ -1,0 +1,34 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+
+# Local Python environments
+.venv/
+venv/
+
+# Generated datasets
+eventset.csv
+eventset_*.csv
+data/
+
+# Training outputs
+Results/
+Results_*/
+*.weights.h5
+*.keras
+*.ckpt
+history.json
+meta.json
+predictions_test_map.csv
+training_curves.png
+histograms_from_*.png
+source_*.png
+
+# Generated reports and derived media
+pdf or html/*.pdf
+pdf or html/*.png
+
+# Python cache
+generate_events/__pycache__/

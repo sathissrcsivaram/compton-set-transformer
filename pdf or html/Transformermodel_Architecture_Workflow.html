@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Transformermodel Architecture Workflow</title>
+  <style>
+    @page {
+      size: A3 landscape;
+      margin: 0.28in;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #111315;
+      color: #f2f4f8;
+      font-family: "Liberation Sans", Arial, sans-serif;
+    }
+    .page {
+      width: 100%;
+      min-height: 100vh;
+      background: #111315;
+      padding: 10px 12px 10px 12px;
+      box-sizing: border-box;
+    }
+    h1 {
+      margin: 0 0 2px 0;
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: 0.2px;
+    }
+    .sub {
+      margin: 0 0 6px 0;
+      color: #b4bdc9;
+      font-size: 9px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: 8.4px;
+      line-height: 1.16;
+      background: #15181d;
+      border: 1px solid #2d333b;
+    }
+    th, td {
+      border-bottom: 1px solid #2a2f36;
+      padding: 4px 6px;
+      vertical-align: top;
+      word-wrap: break-word;
+    }
+    th {
+      color: #ffffff;
+      font-weight: 700;
+      text-align: left;
+      background: #1a1f26;
+    }
+    tr:nth-child(even) td {
+      background: #14181e;
+    }
+    .c1 { width: 22%; }
+    .c2 { width: 24%; }
+    .c3 { width: 22%; }
+    .c4 { width: 32%; }
+    .mono {
+      font-family: "Liberation Mono", monospace;
+      color: #d9e2ff;
+    }
+    .muted {
+      color: #aeb8c4;
+    }
+    .accent {
+      color: #7cc4ff;
+      font-weight: 700;
+    }
+    .footer {
+      margin-top: 5px;
+      color: #98a3b1;
+      font-size: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>Transformermodel Architecture Workflow</h1>
+    <p class="sub">Single-page workflow summary for the Compton source-localization heatmap model in <span class="mono">train_compton_set_transformer.py</span></p>
+
+    <table>
+      <thead>
+        <tr>
+          <th class="c1">Stage</th>
+          <th class="c2">Input</th>
+          <th class="c3">Output Shape</th>
+          <th class="c4">Key Details</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="accent">1. Dataset Source</span></td>
+          <td><span class="mono">/content/mydrive/MyDrive/Transformermodel/eventset.csv</span></td>
+          <td>Raw CSV rows</td>
+          <td>Loaded with <span class="mono">pd.read_csv</span>. Required columns include source, scatter, absorb, theta, and energy fields.</td>
+        </tr>
+        <tr>
+          <td><span class="accent">2. Feature Prep + Grouping</span></td>
+          <td>Raw event rows</td>
+          <td>6 features per row<br>grouped by source</td>
+          <td>Uses <span class="mono">[Scatter_X, Scatter_Y, Absorb_X, Absorb_Y, Theta, Energy]</span>, converts theta to radians, and builds <span class="mono">source_id</span> from source coordinates.</td>
+        </tr>
+        <tr>
+          <td><span class="accent">3. Train / Val / Test Split</span></td>
+          <td>Grouped sources</td>
+          <td>70% / 15% / 15%</td>
+          <td>Prevents leakage across the same source. Grid statistics are computed from train only.</td>
+        </tr>
+        <tr>
+          <td><span class="accent">4. Tensor Builder</span></td>
+          <td>Per-source events</td>
+          <td><span class="mono">events: [B, 3000, 6]</span><br><span class="mono">mask: [B, 3000]</span><br><span class="mono">target: [B, 2500]</span></td>
+          <td>Each source is padded or truncated to <span class="mono">MAX_EVENTS = 3000</span>. Target is a flattened <span class="mono">50 x 50</span> heatmap.</td>
+        </tr>
+        <tr>
+          <td><span class="accent">5. Model Inputs</span></td>
+          <td><span class="mono">events</span>, <span class="mono">mask</span></td>
+          <td><span class="mono">[B, 3000, 6]</span>, <span class="mono">[B, 3000]</span></td>
+          <td>Keras model takes event sequences and a boolean mask indicating valid events per source.</td>
+        </tr>
+        <tr>
+          <td><span class="accent">6. Shared Normalization</span></td>
+          <td><span class="mono">events</span></td>
+          <td><span class="mono">[B, 3000, 6]</span></td>
+          <td><span class="mono">KerasNormalization(axis=-1)</span> is adapted on the full training tensor before fitting.</td>
+        </tr>
+        <tr>
+          <td><span class="accent">7. Event Encoder Block 1</span></td>
+          <td><span class="mono">[B, 3000, 6]</span></td>
+          <td><span class="mono">[B, 3000, 256]</span></td>
+          <td>Dense -> GELU -> Dropout -> Dense -> LayerNorm with residual projection to 256 channels.</td>
+        </tr>
+        <tr>
+          <td><span class="accent">8. Event Encoder Block 2</span></td>
+          <td><span class="mono">[B, 3000, 256]</span></td>
+          <td><span class="mono">[B, 3000, 256]</span></td>
+          <td>Second residual event block with the same width. Keeps event-wise processing shared across time.</td>
+        </tr>
+        <tr>
+          <td><span class="accent">9. Event Encoder Block 3</span></td>
+          <td><span class="mono">[B, 3000, 256]</span></td>
+          <td><span class="mono">[B, 3000, 128]</span></td>
+          <td>Third residual block reduces event embedding width to 128.</td>
+        </tr>
+        <tr>
+          <td><span class="accent">10. ISAB Attention Layer</span></td>
+          <td><span class="mono">[B, 3000, 128]</span> + mask</td>
+          <td><span class="mono">[B, 3000, 128]</span></td>
+          <td>Induced Set Attention Block with <span class="mono">4 heads</span>, <span class="mono">128 inducing points</span>, dropout 0.10, and learnable inducing tokens.</td>
+        </tr>
+        <tr>
+          <td><span class="accent">11. Attention Pooling</span></td>
+          <td><span class="mono">[B, 3000, 128]</span></td>
+          <td><span class="mono">[B, 128]</span></td>
+          <td>Masked attention scores over events. Produces a permutation-invariant pooled source representation.</td>
+        </tr>
+        <tr>
+          <td><span class="accent">12. Count + Prediction Head</span></td>
+          <td>Pooled source vector + mask count</td>
+          <td><span class="mono">[B, 128]</span></td>
+          <td>Normalized event count is concatenated, then processed by Dense 128 -> Dropout -> Dense 128 -> LayerNorm.</td>
+        </tr>
+        <tr>
+          <td><span class="accent">13. Heatmap Output</span></td>
+          <td><span class="mono">[B, 128]</span></td>
+          <td><span class="mono">[B, 2500]</span></td>
+          <td>Softmax over <span class="mono">HEATMAP_H * HEATMAP_W = 50 * 50</span>. Represents a probability distribution over source location cells.</td>
+        </tr>
+        <tr>
+          <td><span class="accent">14. Training Setup</span></td>
+          <td>Train/val datasets</td>
+          <td>Epoch loop</td>
+          <td>Adam optimizer, KL-divergence style loss, batch size 16, max 300 epochs, ModelCheckpoint, ReduceLROnPlateau, EarlyStopping(<span class="mono">patience=7</span>).</td>
+        </tr>
+        <tr>
+          <td><span class="accent">15. Inference + Uncertainty</span></td>
+          <td>Best saved weights</td>
+          <td>Mean heatmap predictions</td>
+          <td>Uses <span class="mono">MC_DROPOUT_PASSES = 10</span> for stochastic forward passes during evaluation.</td>
+        </tr>
+        <tr>
+          <td><span class="accent">16. Final Outputs</span></td>
+          <td>Predicted heatmaps</td>
+          <td>Metrics + artifacts</td>
+          <td>Saves <span class="mono">best.weights.h5</span>, <span class="mono">final.weights.h5</span>, training curves, histograms, side-by-side heatmaps, and <span class="mono">predictions_test_map.csv</span>.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="footer">
+      Main configuration used: <span class="mono">EVENT_HIDDEN=[256,256,128]</span>,
+      <span class="mono">MAX_EVENTS=3000</span>,
+      <span class="mono">NUM_SAB_HEADS=4</span>,
+      <span class="mono">ISAB_NUM_INDUCING=128</span>,
+      <span class="mono">HEATMAP=50x50</span>,
+      <span class="mono">BATCH_SIZE=16</span>.
+    </div>
+  </div>
+</body>
+</html>
