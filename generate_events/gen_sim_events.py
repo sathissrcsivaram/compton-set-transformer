@@ -30,10 +30,10 @@ Current_source_y = 25
 Current_source_z = -123
 
 GEN_COLUMNS = [
-    "source_x", "source_y", "source_z",
-    "scat_x", "scat_y", "scat_z",
-    "absorb_x", "absorb_y", "absorb_z",
-    "theta", "e_energy",
+    "Source_X", "Source_Y", "Source_Z",
+    "Scatter_X", "Scatter_Y", "Scatter_Z",
+    "Absorb_X", "Absorb_Y", "Absorb_Z",
+    "Theta", "Energy",
 ]
 
 def genSimEvents(noOfSources, noOfEvents, write_separate_file=True) :
