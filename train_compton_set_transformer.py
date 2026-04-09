@@ -55,7 +55,7 @@ TRAIN_FRAC, VAL_FRAC, TEST_FRAC = 0.70, 0.15, 0.15
 BATCH_SIZE = 16
 EPOCHS = int(os.environ.get("COMPTON_EPOCHS", "300"))
 LEARNING_RATE = float(os.environ.get("COMPTON_LEARNING_RATE", "3e-4"))
-DROPOUT = 0.10
+DROPOUT = float(os.environ.get("COMPTON_DROPOUT", "0.10"))
 L2 = 1e-6
 
 # Per-event encoder sizes
