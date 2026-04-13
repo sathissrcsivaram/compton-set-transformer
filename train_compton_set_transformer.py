@@ -56,7 +56,7 @@ BATCH_SIZE = 16
 EPOCHS = int(os.environ.get("COMPTON_EPOCHS", "300"))
 LEARNING_RATE = float(os.environ.get("COMPTON_LEARNING_RATE", "3e-4"))
 DROPOUT = float(os.environ.get("COMPTON_DROPOUT", "0.10"))
-L2 = 1e-6
+L2 = float(os.environ.get("COMPTON_L2", "1e-6"))
 
 # Per-event encoder sizes
 EVENT_HIDDEN = [256, 256, 128]
