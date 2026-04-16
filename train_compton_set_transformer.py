@@ -144,6 +144,12 @@ def restore_log_capture():
         _LOG_HANDLE.close()
         _LOG_HANDLE = None
 
+
+class LearningRateLogger(keras.callbacks.Callback):
+    def on_epoch_end(self, epoch, logs=None):
+        lr = float(tf.keras.backend.get_value(self.model.optimizer.learning_rate))
+        print(f"Epoch {epoch + 1}: learning_rate = {lr:.8g}")
+
 # =========================
 # Reproducibility
 # =========================
@@ -931,6 +937,7 @@ def main():
             save_weights_only=True,
             verbose=1,
         ),
+        LearningRateLogger(),
     ]
     try:
         swa = keras.callbacks.StochasticWeightAveraging(start_epoch=max(5, EPOCHS // 3))
