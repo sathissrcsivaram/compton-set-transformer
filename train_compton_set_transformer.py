@@ -80,6 +80,9 @@ MC_DROPOUT_PASSES = int(os.environ.get("COMPTON_MC_DROPOUT_PASSES", "10"))
 # Data specifics
 CONVERT_THETA_TO_RADIANS = True
 MAX_EVENTS = int(os.environ.get("COMPTON_MAX_EVENTS", "3000"))   # pad/truncate per source to this many events
+EVENTS_PER_SOURCE = int(os.environ.get("COMPTON_EVENTS_PER_SOURCE", str(MAX_EVENTS)))
+PADDING_MODE = os.environ.get("COMPTON_PADDING_MODE", "zero").strip().lower()
+MASK_PADDED_EVENTS = os.environ.get("COMPTON_MASK_PADDED_EVENTS", "1").strip().lower() not in {"0", "false", "no"}
 EARLY_STOPPING_PATIENCE = int(os.environ.get("COMPTON_EARLY_STOPPING_PATIENCE", "7"))
 REDUCE_LR_PATIENCE = int(os.environ.get("COMPTON_REDUCE_LR_PATIENCE", "10"))
 
@@ -168,6 +171,14 @@ RAW_COLS = [
 ]
 FEATURE_COLS = ["Scatter_X", "Scatter_Y", "Absorb_X", "Absorb_Y", "Theta", "Energy"]
 TARGET_COLS = ["Source_X", "Source_Y"]
+VALID_PADDING_MODES = {"zero", "mean", "repeat", "sample"}
+
+if EVENTS_PER_SOURCE <= 0:
+    raise ValueError(f"COMPTON_EVENTS_PER_SOURCE must be positive, got {EVENTS_PER_SOURCE}")
+if MAX_EVENTS <= 0:
+    raise ValueError(f"COMPTON_MAX_EVENTS must be positive, got {MAX_EVENTS}")
+if PADDING_MODE not in VALID_PADDING_MODES:
+    raise ValueError(f"COMPTON_PADDING_MODE must be one of {sorted(VALID_PADDING_MODES)}, got {PADDING_MODE!r}")
 
 # =========================
 # Split helpers (by source)
@@ -244,6 +255,7 @@ def coord_to_heatmap_flat(x: float, y: float) -> np.ndarray:
 def build_source_tensors(
     df: pd.DataFrame,
     max_events: int,
+    events_per_source: int,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[str], np.ndarray]:
     """
     Returns:
@@ -264,9 +276,23 @@ def build_source_tensors(
     for i, (sid, g) in enumerate(groups):
         feats = g[FEATURE_COLS].to_numpy(dtype=np.float32)
         n = feats.shape[0]
-        n_use = min(n, max_events)
+        n_real = min(n, events_per_source)
+        n_use = min(n_real, max_events)
         X[i, :n_use, :] = feats[:n_use]
         mask[i, :n_use] = True
+        if n_use < max_events and n_use > 0:
+            pad_count = max_events - n_use
+            if PADDING_MODE == "mean":
+                X[i, n_use:, :] = feats[:n_use].mean(axis=0, keepdims=True)
+            elif PADDING_MODE == "repeat":
+                repeats = int(np.ceil(pad_count / n_use))
+                X[i, n_use:, :] = np.tile(feats[:n_use], (repeats, 1))[:pad_count]
+            elif PADDING_MODE == "sample":
+                rng = np.random.default_rng(RANDOM_SEED + i)
+                sample_idx = rng.choice(n_use, size=pad_count, replace=True)
+                X[i, n_use:, :] = feats[sample_idx]
+            if not MASK_PADDED_EVENTS:
+                mask[i, n_use:] = True
         xy = g[TARGET_COLS].iloc[0].to_numpy(dtype=np.float32)
         source_xy[i] = xy
         y_heat[i] = coord_to_heatmap_flat(float(xy[0]), float(xy[1]))
@@ -843,6 +869,9 @@ def write_run_summary(
         f"CSV_PATH: {CSV_PATH}",
         f"SAVE_DIR: {SAVE_DIR}",
         f"MAX_EVENTS: {MAX_EVENTS}",
+        f"EVENTS_PER_SOURCE: {EVENTS_PER_SOURCE}",
+        f"PADDING_MODE: {PADDING_MODE}",
+        f"MASK_PADDED_EVENTS: {MASK_PADDED_EVENTS}",
         f"EPOCHS_REQUESTED: {EPOCHS}",
         f"EPOCHS_RUN: {len(history_dict.get('loss', []))}",
         f"BEST_EPOCH: {best_epoch if best_epoch is not None else 'N/A'}",
@@ -907,9 +936,9 @@ def main():
     compute_grid_from_train(df_train)
 
     # Per-source tensors with heatmaps
-    X_train, M_train, y_train, sid_train, xy_train = build_source_tensors(df_train, MAX_EVENTS)
-    X_val, M_val, y_val, sid_val, xy_val = build_source_tensors(df_val, MAX_EVENTS)
-    X_test, M_test, y_test, sid_test, xy_test = build_source_tensors(df_test, MAX_EVENTS)
+    X_train, M_train, y_train, sid_train, xy_train = build_source_tensors(df_train, MAX_EVENTS, EVENTS_PER_SOURCE)
+    X_val, M_val, y_val, sid_val, xy_val = build_source_tensors(df_val, MAX_EVENTS, EVENTS_PER_SOURCE)
+    X_test, M_test, y_test, sid_test, xy_test = build_source_tensors(df_test, MAX_EVENTS, EVENTS_PER_SOURCE)
 
     # Model
     model = build_set_model(max_events=MAX_EVENTS, feat_dim=len(FEATURE_COLS))
@@ -998,6 +1027,9 @@ def main():
         "gelu": USE_GELU,
         "mc_dropout_passes": MC_DROPOUT_PASSES,
         "max_events": MAX_EVENTS,
+        "events_per_source": EVENTS_PER_SOURCE,
+        "padding_mode": PADDING_MODE,
+        "mask_padded_events": MASK_PADDED_EVENTS,
         "isab": {"num_heads": NUM_SAB_HEADS, "m": ISAB_NUM_INDUCING},
         "heatmap": {
             "H": HEATMAP_H, "W": HEATMAP_W, "gauss_sigma_px": GAUSS_SIGMA_PX,
