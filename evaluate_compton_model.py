@@ -154,6 +154,7 @@ def main():
         metrics_expectation = t.print_source_metrics_from_maps(
             p_test, xy_test, label=f"eval_heatmap_model (E[x,y], events={t.EVENTS_PER_SOURCE})"
         )
+        t.plot_gt_vs_pred_side_by_side(sid_test, xy_test, p_test, tag="eval", limit=None)
         t.plot_histograms_from_maps(
             xy_test, p_test, tag="eval",
             xlim_max=50, euclid_max=70.71, bins=t.N_BINS_HIST, bar_width=0.9
