@@ -16,12 +16,34 @@ SEPARATE_OUTPUT_DIR = REPO_ROOT / "data" / "multiSourceData"
 
 GRID_X = 50
 GRID_Y = 50
+HEATMAP_W = 50
+HEATMAP_H = 50
+GRID_PADDING_FRACTION = 0.05
 DEFAULT_SOURCE_Z = -123
-# Derived from the current single-source heatmap target:
-# sigma_px = 1.5, effective sigma ~= 1.65 mm, practical blur radius ~= 3*sigma ~= 4.95 mm.
-# Professor's rule: min_dist = 2 * radius + delta, with delta = 1 mm.
-# Therefore default minimum center spacing ~= 2 * 4.95 + 1 ~= 10.9 mm, rounded to 11 mm.
-DEFAULT_MIN_SOURCE_DISTANCE = 11.0
+GAUSS_SIGMA_PX = 1.5
+PRACTICAL_BLUR_SIGMA_MULTIPLIER = 3.0
+DELTA_MM = 1.0
+
+
+def compute_grid_spacing_mm(grid_size: int, heatmap_size: int, padding_fraction: float) -> float:
+    coord_min = 0.0
+    coord_max = float(grid_size - 1)
+    coord_range = coord_max - coord_min
+    pad = padding_fraction * coord_range
+    padded_width = (coord_max + pad) - (coord_min - pad)
+    return padded_width / float(heatmap_size - 1)
+
+
+GRID_SPACING_X_MM = compute_grid_spacing_mm(GRID_X, HEATMAP_W, GRID_PADDING_FRACTION)
+GRID_SPACING_Y_MM = compute_grid_spacing_mm(GRID_Y, HEATMAP_H, GRID_PADDING_FRACTION)
+SIGMA_X_MM = GAUSS_SIGMA_PX * GRID_SPACING_X_MM
+SIGMA_Y_MM = GAUSS_SIGMA_PX * GRID_SPACING_Y_MM
+BLUR_RADIUS_X_MM = PRACTICAL_BLUR_SIGMA_MULTIPLIER * SIGMA_X_MM
+BLUR_RADIUS_Y_MM = PRACTICAL_BLUR_SIGMA_MULTIPLIER * SIGMA_Y_MM
+BLUR_RADIUS_MM = max(BLUR_RADIUS_X_MM, BLUR_RADIUS_Y_MM)
+MIN_SOURCE_DISTANCE_MM = (2.0 * BLUR_RADIUS_MM) + DELTA_MM
+# Use ceil so the enforced grid spacing is never smaller than the derived minimum.
+DEFAULT_MIN_SOURCE_DISTANCE = float(math.ceil(MIN_SOURCE_DISTANCE_MM))
 DEFAULT_RANDOM_SEED = 42
 
 CSV_COLUMNS = [
@@ -222,7 +244,7 @@ def parse_args() -> argparse.Namespace:
         "--min-source-distance",
         type=float,
         default=DEFAULT_MIN_SOURCE_DISTANCE,
-        help="Minimum Euclidean distance between source centers in grid units.",
+        help="Minimum Euclidean distance between source centers in grid units/mm.",
     )
     parser.add_argument(
         "--seed",
@@ -281,6 +303,7 @@ def main() -> None:
         print("Sources per image:", args.sources_per_image)
         print("Events per source:", args.events_per_source)
         print("Minimum source distance:", args.min_source_distance)
+        print("Derived blur radius (mm):", round(BLUR_RADIUS_MM, 4))
         print("Random seed:", args.seed)
         print("Total rows:", len(dataset))
         print("Output:", output_path)
