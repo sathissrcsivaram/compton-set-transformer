@@ -20,6 +20,15 @@ HEATMAP_W = 50
 HEATMAP_H = 50
 GRID_PADDING_FRACTION = 0.05
 DEFAULT_SOURCE_Z = -123
+# Derived from the current single-source heatmap target.
+# GAUSS_SIGMA_PX = 1.5 heatmap pixels.
+# One heatmap pixel is approximately 1.1 mm, so:
+# sigma ~= 1.5 * 1.1 = 1.65 mm.
+# Using a practical outer blur radius of 3*sigma:
+# radius ~= 3 * 1.65 = 4.95 mm.
+# Therefore:
+# min_dist ~= 2 * 4.95 + 1 = 10.9 mm,
+# which is rounded up to 11 mm.
 GAUSS_SIGMA_PX = 1.5
 PRACTICAL_BLUR_SIGMA_MULTIPLIER = 3.0
 DELTA_MM = 1.0
