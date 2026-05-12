@@ -2,7 +2,7 @@ import argparse
 import math
 import random
 from pathlib import Path
-from typing import Iterable, List, Sequence, Tuple
+from typing import List, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -17,6 +17,12 @@ SEPARATE_OUTPUT_DIR = REPO_ROOT / "data" / "multiSourceData"
 GRID_X = 50
 GRID_Y = 50
 DEFAULT_SOURCE_Z = -123
+# Derived from the current single-source heatmap target:
+# sigma_px = 1.5, effective sigma ~= 1.65 mm, practical blur radius ~= 3*sigma ~= 4.95 mm.
+# Professor's rule: min_dist = 2 * radius + delta, with delta = 1 mm.
+# Therefore default minimum center spacing ~= 2 * 4.95 + 1 ~= 10.9 mm, rounded to 11 mm.
+DEFAULT_MIN_SOURCE_DISTANCE = 11.0
+DEFAULT_RANDOM_SEED = 42
 
 CSV_COLUMNS = [
     "Image_ID",
@@ -215,8 +221,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--min-source-distance",
         type=float,
-        default=10.0,
+        default=DEFAULT_MIN_SOURCE_DISTANCE,
         help="Minimum Euclidean distance between source centers in grid units.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_RANDOM_SEED,
+        help="Random seed for reproducible source placement and event generation.",
     )
     parser.add_argument(
         "--source-z",
@@ -245,6 +257,9 @@ def write_separate_files(
 def main() -> None:
     args = parse_args()
 
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+
     dataset = generate_dataset(
         num_images=args.num_images,
         sources_per_image=args.sources_per_image,
@@ -265,6 +280,8 @@ def main() -> None:
         print("Images:", args.num_images)
         print("Sources per image:", args.sources_per_image)
         print("Events per source:", args.events_per_source)
+        print("Minimum source distance:", args.min_source_distance)
+        print("Random seed:", args.seed)
         print("Total rows:", len(dataset))
         print("Output:", output_path)
 
