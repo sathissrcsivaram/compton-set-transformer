@@ -109,8 +109,8 @@ def simulate_events_for_source(
     events = np.zeros((num_events, 8), dtype=np.float32)
 
     for i in range(num_events):
-        scatter_x = round(random.uniform(0, 50), 0)
-        scatter_y = round(random.uniform(0, 50), 0)
+        scatter_x = round(random.uniform(0, 49), 0)
+        scatter_y = round(random.uniform(0, 49), 0)
         scatter_z = 0.0
 
         absorb_x = round(random.uniform(0, 45), 0)
