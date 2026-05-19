@@ -526,7 +526,7 @@ def main():
     print(f"TEST_LOSS: {test_metrics['loss']:.6f}")
     print(f"TEST_CATEGORICAL_CROSSENTROPY: {test_metrics['categorical_crossentropy']:.6f}")
 
-    plot_multisource_heatmap_pairs(iid_test, y_test, p_test, coords_test, tag="test", limit=12)
+    plot_multisource_heatmap_pairs(iid_test, y_test, p_test, coords_test, tag="test", limit=len(iid_test))
 
     model.save_weights(FINAL_WEIGHTS)
 
