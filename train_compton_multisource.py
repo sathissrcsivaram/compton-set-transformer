@@ -383,12 +383,78 @@ def save_multisource_eval_csv(eval_df: pd.DataFrame) -> str:
     return out_csv
 
 
+def save_multisource_error_histograms(eval_df: pd.DataFrame) -> List[str]:
+    outdir = os.path.join(SAVE_DIR, "histograms")
+    os.makedirs(outdir, exist_ok=True)
+
+    matched_distances: List[float] = []
+    for raw in eval_df["matched_distances_mm"].tolist():
+        matched_distances.extend(float(x) for x in json.loads(raw))
+
+    saved_paths: List[str] = []
+
+    def _save_hist(data: Sequence[float], out_name: str, title: str, xlabel: str, bins: int = 30):
+        arr = np.asarray(list(data), dtype=np.float32)
+        arr = arr[np.isfinite(arr)]
+        if arr.size == 0:
+            return
+        fig, ax = t.plt.subplots(figsize=(7.2, 5.0), constrained_layout=True)
+        ax.hist(arr, bins=bins, color="#2a9d8f", edgecolor="black", alpha=0.85)
+        ax.set_title(title)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel("Number of samples")
+        ax.grid(True, alpha=0.25)
+        out_path = os.path.join(outdir, out_name)
+        t.plt.savefig(out_path, dpi=150)
+        t.plt.close(fig)
+        saved_paths.append(out_path)
+
+    _save_hist(
+        matched_distances,
+        "source_match_error_histogram.png",
+        "Source-Level Matched Localization Error",
+        "Matched source error (mm)",
+    )
+    _save_hist(
+        eval_df["mean_match_error_mm"].tolist(),
+        "image_mean_error_histogram.png",
+        "Image-Level Mean Localization Error",
+        "Mean matched error per image (mm)",
+    )
+    _save_hist(
+        eval_df["rmse_match_error_mm"].tolist(),
+        "image_rmse_error_histogram.png",
+        "Image-Level RMSE Localization Error",
+        "RMSE matched error per image (mm)",
+    )
+
+    counts = eval_df["within_tolerance_count"].to_numpy(dtype=np.int32)
+    if counts.size > 0:
+        fig, ax = t.plt.subplots(figsize=(7.2, 5.0), constrained_layout=True)
+        bins = np.arange(-0.5, counts.max() + 1.5, 1.0)
+        ax.hist(counts, bins=bins, color="#e76f51", edgecolor="black", alpha=0.85, rwidth=0.9)
+        ax.set_title("Images by Number of Sources Within Tolerance")
+        ax.set_xlabel("Matched sources within tolerance per image")
+        ax.set_ylabel("Number of images")
+        ax.set_xticks(np.arange(0, counts.max() + 1, 1))
+        ax.grid(True, axis="y", alpha=0.25)
+        out_path = os.path.join(outdir, "within_tolerance_count_histogram.png")
+        t.plt.savefig(out_path, dpi=150)
+        t.plt.close(fig)
+        saved_paths.append(out_path)
+
+    if saved_paths:
+        print(f"Saved multi-source histograms -> {outdir}")
+    return saved_paths
+
+
 def write_run_summary(
     history_dict: Dict[str, List[float]],
     test_metrics: Dict[str, float],
     multisource_metrics: Dict[str, float],
     predictions_csv: str,
     eval_csv: str,
+    histogram_paths: Sequence[str],
     num_train_images: int,
     num_val_images: int,
     num_test_images: int,
@@ -440,6 +506,7 @@ def write_run_summary(
         f"final.weights.h5: {FINAL_WEIGHTS}",
         f"predictions_test_heatmaps.csv: {predictions_csv}",
         f"predictions_test_multisource_eval.csv: {eval_csv}",
+        f"histograms: {json.dumps(list(histogram_paths))}",
         f"training_log.txt: {TRAINING_LOG}",
     ]
     with open(RUN_SUMMARY, "w", encoding="utf-8") as f:
@@ -576,6 +643,7 @@ def main():
         suppression_radius_px=PEAK_SUPPRESSION_RADIUS_PX,
     )
     eval_csv = save_multisource_eval_csv(eval_df)
+    histogram_paths = save_multisource_error_histograms(eval_df)
     print(f"=== Multi-Source Peak Metrics ===")
     print(f"MEAN_IMAGE_MATCH_ERROR_MM: {multisource_metrics['mean_image_match_error_mm']:.6f}")
     print(f"MEAN_IMAGE_RMSE_MM: {multisource_metrics['mean_image_rmse_mm']:.6f}")
@@ -591,6 +659,7 @@ def main():
         multisource_metrics,
         predictions_csv,
         eval_csv,
+        histogram_paths,
         num_train_images=len(iid_train),
         num_val_images=len(iid_val),
         num_test_images=len(iid_test),
