@@ -1,5 +1,6 @@
 import csv
 import json
+import itertools
 import os
 import random
 from pathlib import Path
@@ -55,6 +56,11 @@ CSV_REQUIRED_COLS = [
     "Theta",
     "Energy",
 ]
+PEAK_MATCH_TOLERANCE_MM = float(os.environ.get("COMPTON_PEAK_MATCH_TOLERANCE_MM", "3.0"))
+DEFAULT_PEAK_SUPPRESSION_RADIUS_PX = max(1, int(round(t.GAUSS_SIGMA_PX)))
+PEAK_SUPPRESSION_RADIUS_PX = int(
+    os.environ.get("COMPTON_PEAK_SUPPRESSION_RADIUS_PX", str(DEFAULT_PEAK_SUPPRESSION_RADIUS_PX))
+)
 
 
 class TeeStream:
@@ -206,14 +212,14 @@ def plot_multisource_heatmap_pairs(
 
         im0 = axs[0].imshow(true_map, origin="lower", extent=extent, cmap=t.CMAP, aspect="auto")
         t.plt.colorbar(im0, ax=axs[0], fraction=0.046, pad=0.04, label="probability")
-        axs[0].scatter(coords[:, 0], coords[:, 1], c="cyan", s=70, edgecolors="black", linewidths=0.8)
+        axs[0].scatter(coords[:, 0], coords[:, 1], c="cyan", s=70)
         axs[0].set_title(f"Ground Truth Heatmap\nImage {image_id}")
         axs[0].set_xlabel("x")
         axs[0].set_ylabel("y")
 
         im1 = axs[1].imshow(pred_map, origin="lower", extent=extent, cmap=t.CMAP, aspect="auto")
         t.plt.colorbar(im1, ax=axs[1], fraction=0.046, pad=0.04, label="probability")
-        axs[1].scatter(coords[:, 0], coords[:, 1], c="cyan", s=70, edgecolors="black", linewidths=0.8)
+        axs[1].scatter(coords[:, 0], coords[:, 1], c="cyan", s=70)
         axs[1].set_title(f"Predicted Heatmap\nImage {image_id}")
         axs[1].set_xlabel("x")
         axs[1].set_ylabel("y")
@@ -223,6 +229,130 @@ def plot_multisource_heatmap_pairs(
         t.plt.close(fig)
 
     print(f"Saved GT vs Pred side-by-side figures -> {outdir}")
+
+
+def extract_topk_heatmap_peaks(
+    heatmap_flat: np.ndarray,
+    k: int,
+    suppression_radius_px: int,
+) -> np.ndarray:
+    heat = np.asarray(heatmap_flat, dtype=np.float32).reshape(HEATMAP_H, HEATMAP_W).copy()
+    peaks: List[Tuple[float, float]] = []
+
+    for _ in range(k):
+        flat_idx = int(np.argmax(heat))
+        peak_value = float(heat.flat[flat_idx])
+        if not np.isfinite(peak_value) or peak_value <= 0.0:
+            break
+
+        iy, ix = np.unravel_index(flat_idx, heat.shape)
+        peaks.append((float(t.GRID_X_CENTERS[ix]), float(t.GRID_Y_CENTERS[iy])))
+
+        y0 = max(0, iy - suppression_radius_px)
+        y1 = min(HEATMAP_H, iy + suppression_radius_px + 1)
+        x0 = max(0, ix - suppression_radius_px)
+        x1 = min(HEATMAP_W, ix + suppression_radius_px + 1)
+        heat[y0:y1, x0:x1] = -np.inf
+
+    return np.asarray(peaks, dtype=np.float32)
+
+
+def match_predicted_to_true_sources(
+    true_coords: np.ndarray,
+    pred_coords: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    true_coords = np.asarray(true_coords, dtype=np.float32)
+    pred_coords = np.asarray(pred_coords, dtype=np.float32)
+    n_true = int(true_coords.shape[0])
+    n_pred = int(pred_coords.shape[0])
+    n = min(n_true, n_pred)
+
+    if n == 0:
+        return np.zeros((0,), dtype=np.float32), np.zeros((0, 2), dtype=np.float32)
+
+    dmat = np.linalg.norm(true_coords[:, None, :] - pred_coords[None, :, :], axis=-1)
+    best_cost = None
+    best_perm = None
+    for perm in itertools.permutations(range(n_pred), n):
+        cost = float(sum(dmat[i, perm[i]] for i in range(n)))
+        if best_cost is None or cost < best_cost:
+            best_cost = cost
+            best_perm = perm
+
+    assert best_perm is not None
+    matched_pred = pred_coords[list(best_perm)]
+    matched_distances = np.asarray([dmat[i, best_perm[i]] for i in range(n)], dtype=np.float32)
+    return matched_distances, matched_pred
+
+
+def evaluate_multisource_predictions(
+    image_ids: Sequence[str],
+    true_source_coords: Sequence[np.ndarray],
+    pred_heatmaps: np.ndarray,
+    tolerance_mm: float,
+    suppression_radius_px: int,
+) -> Tuple[Dict[str, float], pd.DataFrame]:
+    rows: List[Dict[str, object]] = []
+    mean_errors: List[float] = []
+    rmse_errors: List[float] = []
+    all_distances: List[float] = []
+    exact_image_hits = 0
+    peak_count_matches = 0
+
+    for image_id, true_coords, pred_heat in zip(image_ids, true_source_coords, pred_heatmaps):
+        true_coords = np.asarray(true_coords, dtype=np.float32)
+        pred_peaks = extract_topk_heatmap_peaks(pred_heat, k=len(true_coords), suppression_radius_px=suppression_radius_px)
+        distances, matched_pred = match_predicted_to_true_sources(true_coords, pred_peaks)
+
+        if len(pred_peaks) == len(true_coords):
+            peak_count_matches += 1
+
+        if len(distances) > 0:
+            mean_err = float(np.mean(distances))
+            rmse_err = float(np.sqrt(np.mean(np.square(distances))))
+            within_tol = int(np.sum(distances <= tolerance_mm))
+            all_hit = bool(np.all(distances <= tolerance_mm))
+            if all_hit:
+                exact_image_hits += 1
+            mean_errors.append(mean_err)
+            rmse_errors.append(rmse_err)
+            all_distances.extend(float(d) for d in distances.tolist())
+        else:
+            mean_err = float("nan")
+            rmse_err = float("nan")
+            within_tol = 0
+            all_hit = False
+
+        rows.append(
+            {
+                "image_id": image_id,
+                "num_true_sources": int(len(true_coords)),
+                "num_predicted_peaks": int(len(pred_peaks)),
+                "mean_match_error_mm": mean_err,
+                "rmse_match_error_mm": rmse_err,
+                "within_tolerance_count": within_tol,
+                "all_sources_within_tolerance": all_hit,
+                "true_source_coords": json.dumps(true_coords.tolist()),
+                "predicted_peak_coords": json.dumps(pred_peaks.tolist()),
+                "matched_predicted_peak_coords": json.dumps(matched_pred.tolist()),
+                "matched_distances_mm": json.dumps([float(x) for x in distances.tolist()]),
+            }
+        )
+
+    num_images = max(1, len(rows))
+    metrics = {
+        "peak_match_tolerance_mm": float(tolerance_mm),
+        "peak_suppression_radius_px": int(suppression_radius_px),
+        "mean_image_match_error_mm": float(np.mean(mean_errors)) if mean_errors else float("nan"),
+        "mean_image_rmse_mm": float(np.mean(rmse_errors)) if rmse_errors else float("nan"),
+        "mean_source_match_error_mm": float(np.mean(all_distances)) if all_distances else float("nan"),
+        "median_source_match_error_mm": float(np.median(all_distances)) if all_distances else float("nan"),
+        "max_source_match_error_mm": float(np.max(all_distances)) if all_distances else float("nan"),
+        "source_within_tolerance_rate": float(np.mean(np.asarray(all_distances) <= tolerance_mm)) if all_distances else 0.0,
+        "exact_image_hit_rate": float(exact_image_hits / num_images),
+        "peak_count_match_rate": float(peak_count_matches / num_images),
+    }
+    return metrics, pd.DataFrame(rows)
 
 
 def save_test_heatmap_csv(
@@ -246,10 +376,19 @@ def save_test_heatmap_csv(
     return out_csv
 
 
+def save_multisource_eval_csv(eval_df: pd.DataFrame) -> str:
+    out_csv = os.path.join(SAVE_DIR, "predictions_test_multisource_eval.csv")
+    eval_df.to_csv(out_csv, index=False)
+    print(f"Saved multi-source evaluation CSV -> {out_csv}")
+    return out_csv
+
+
 def write_run_summary(
     history_dict: Dict[str, List[float]],
     test_metrics: Dict[str, float],
+    multisource_metrics: Dict[str, float],
     predictions_csv: str,
+    eval_csv: str,
     num_train_images: int,
     num_val_images: int,
     num_test_images: int,
@@ -281,6 +420,18 @@ def write_run_summary(
         f"TEST_LOSS: {test_metrics['loss']:.6f}",
         f"TEST_CATEGORICAL_CROSSENTROPY: {test_metrics['categorical_crossentropy']:.6f}",
         "",
+        "Multi-Source Peak Metrics",
+        f"PEAK_MATCH_TOLERANCE_MM: {multisource_metrics['peak_match_tolerance_mm']:.6f}",
+        f"PEAK_SUPPRESSION_RADIUS_PX: {int(multisource_metrics['peak_suppression_radius_px'])}",
+        f"MEAN_IMAGE_MATCH_ERROR_MM: {multisource_metrics['mean_image_match_error_mm']:.6f}",
+        f"MEAN_IMAGE_RMSE_MM: {multisource_metrics['mean_image_rmse_mm']:.6f}",
+        f"MEAN_SOURCE_MATCH_ERROR_MM: {multisource_metrics['mean_source_match_error_mm']:.6f}",
+        f"MEDIAN_SOURCE_MATCH_ERROR_MM: {multisource_metrics['median_source_match_error_mm']:.6f}",
+        f"MAX_SOURCE_MATCH_ERROR_MM: {multisource_metrics['max_source_match_error_mm']:.6f}",
+        f"SOURCE_WITHIN_TOLERANCE_RATE: {multisource_metrics['source_within_tolerance_rate']:.6f}",
+        f"EXACT_IMAGE_HIT_RATE: {multisource_metrics['exact_image_hit_rate']:.6f}",
+        f"PEAK_COUNT_MATCH_RATE: {multisource_metrics['peak_count_match_rate']:.6f}",
+        "",
         "Artifacts",
         f"history.json: {os.path.join(SAVE_DIR, 'history.json')}",
         f"meta.json: {os.path.join(SAVE_DIR, 'meta.json')}",
@@ -288,6 +439,7 @@ def write_run_summary(
         f"best.weights.h5: {BEST_WEIGHTS}",
         f"final.weights.h5: {FINAL_WEIGHTS}",
         f"predictions_test_heatmaps.csv: {predictions_csv}",
+        f"predictions_test_multisource_eval.csv: {eval_csv}",
         f"training_log.txt: {TRAINING_LOG}",
     ]
     with open(RUN_SUMMARY, "w", encoding="utf-8") as f:
@@ -416,10 +568,29 @@ def main():
         json.dump(meta, f, indent=2)
 
     predictions_csv = save_test_heatmap_csv(iid_test, p_test, coords_test)
+    multisource_metrics, eval_df = evaluate_multisource_predictions(
+        iid_test,
+        coords_test,
+        p_test,
+        tolerance_mm=PEAK_MATCH_TOLERANCE_MM,
+        suppression_radius_px=PEAK_SUPPRESSION_RADIUS_PX,
+    )
+    eval_csv = save_multisource_eval_csv(eval_df)
+    print(f"=== Multi-Source Peak Metrics ===")
+    print(f"MEAN_IMAGE_MATCH_ERROR_MM: {multisource_metrics['mean_image_match_error_mm']:.6f}")
+    print(f"MEAN_IMAGE_RMSE_MM: {multisource_metrics['mean_image_rmse_mm']:.6f}")
+    print(f"MEAN_SOURCE_MATCH_ERROR_MM: {multisource_metrics['mean_source_match_error_mm']:.6f}")
+    print(f"MEDIAN_SOURCE_MATCH_ERROR_MM: {multisource_metrics['median_source_match_error_mm']:.6f}")
+    print(f"MAX_SOURCE_MATCH_ERROR_MM: {multisource_metrics['max_source_match_error_mm']:.6f}")
+    print(f"SOURCE_WITHIN_TOLERANCE_RATE: {multisource_metrics['source_within_tolerance_rate']:.6f}")
+    print(f"EXACT_IMAGE_HIT_RATE: {multisource_metrics['exact_image_hit_rate']:.6f}")
+    print(f"PEAK_COUNT_MATCH_RATE: {multisource_metrics['peak_count_match_rate']:.6f}")
     write_run_summary(
         history.history,
         test_metrics,
+        multisource_metrics,
         predictions_csv,
+        eval_csv,
         num_train_images=len(iid_train),
         num_val_images=len(iid_val),
         num_test_images=len(iid_test),
