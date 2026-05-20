@@ -212,14 +212,12 @@ def plot_multisource_heatmap_pairs(
 
         im0 = axs[0].imshow(true_map, origin="lower", extent=extent, cmap=t.CMAP, aspect="auto")
         t.plt.colorbar(im0, ax=axs[0], fraction=0.046, pad=0.04, label="probability")
-        axs[0].scatter(coords[:, 0], coords[:, 1], c="cyan", s=70)
         axs[0].set_title(f"Ground Truth Heatmap\nImage {image_id}")
         axs[0].set_xlabel("x")
         axs[0].set_ylabel("y")
 
         im1 = axs[1].imshow(pred_map, origin="lower", extent=extent, cmap=t.CMAP, aspect="auto")
         t.plt.colorbar(im1, ax=axs[1], fraction=0.046, pad=0.04, label="probability")
-        axs[1].scatter(coords[:, 0], coords[:, 1], c="cyan", s=70)
         axs[1].set_title(f"Predicted Heatmap\nImage {image_id}")
         axs[1].set_xlabel("x")
         axs[1].set_ylabel("y")
