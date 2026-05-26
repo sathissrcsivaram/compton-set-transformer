@@ -2,7 +2,7 @@ import argparse
 import math
 import random
 from pathlib import Path
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -70,6 +70,42 @@ CSV_COLUMNS = [
     "Theta",
     "Energy",
 ]
+
+
+def sample_num_sources_for_image(
+    fixed_sources_per_image: Optional[int],
+    min_sources_per_image: int,
+    max_sources_per_image: int,
+) -> int:
+    if fixed_sources_per_image is not None:
+        return int(fixed_sources_per_image)
+    return int(random.randint(min_sources_per_image, max_sources_per_image))
+
+
+def allocate_events_across_sources(
+    num_sources: int,
+    events_per_source: Optional[int],
+    total_events_per_image: Optional[int],
+) -> List[int]:
+    if num_sources < 1:
+        raise ValueError("num_sources must be at least 1.")
+
+    if total_events_per_image is not None:
+        if total_events_per_image < num_sources:
+            raise ValueError(
+                "total_events_per_image must be at least as large as num_sources "
+                "so every source can contribute at least one event."
+            )
+        base = total_events_per_image // num_sources
+        remainder = total_events_per_image % num_sources
+        counts = [base] * num_sources
+        for i in range(remainder):
+            counts[i] += 1
+        return counts
+
+    if events_per_source is None:
+        raise ValueError("Either events_per_source or total_events_per_image must be provided.")
+    return [int(events_per_source)] * num_sources
 
 
 def sample_source_positions(
@@ -157,17 +193,20 @@ def simulate_events_for_source(
 def build_image_dataframe(
     image_id: int,
     source_positions: Sequence[Tuple[int, int]],
-    events_per_source: int,
+    source_event_counts: Sequence[int],
     source_z: int = DEFAULT_SOURCE_Z,
 ) -> pd.DataFrame:
     rows: List[List[float]] = []
 
-    for source_instance_id, (source_x, source_y) in enumerate(source_positions):
+    if len(source_positions) != len(source_event_counts):
+        raise ValueError("source_positions and source_event_counts must have the same length.")
+
+    for source_instance_id, ((source_x, source_y), num_events) in enumerate(zip(source_positions, source_event_counts)):
         source_events = simulate_events_for_source(
             source_x=source_x,
             source_y=source_y,
             source_z=source_z,
-            num_events=events_per_source,
+            num_events=int(num_events),
         )
 
         for event in source_events:
@@ -197,23 +236,36 @@ def build_image_dataframe(
 
 def generate_dataset(
     num_images: int,
-    sources_per_image: int,
-    events_per_source: int,
+    sources_per_image: Optional[int],
+    events_per_source: Optional[int],
     min_source_distance: float,
+    min_sources_per_image: int = 1,
+    max_sources_per_image: int = 5,
+    total_events_per_image: Optional[int] = None,
     source_z: int = DEFAULT_SOURCE_Z,
 ) -> pd.DataFrame:
     frames: List[pd.DataFrame] = []
 
     for image_id in range(num_images):
+        num_sources = sample_num_sources_for_image(
+            fixed_sources_per_image=sources_per_image,
+            min_sources_per_image=min_sources_per_image,
+            max_sources_per_image=max_sources_per_image,
+        )
         positions = sample_source_positions(
-            num_sources=sources_per_image,
+            num_sources=num_sources,
             min_distance=min_source_distance,
+        )
+        source_event_counts = allocate_events_across_sources(
+            num_sources=num_sources,
+            events_per_source=events_per_source,
+            total_events_per_image=total_events_per_image,
         )
         frames.append(
             build_image_dataframe(
                 image_id=image_id,
                 source_positions=positions,
-                events_per_source=events_per_source,
+                source_event_counts=source_event_counts,
                 source_z=source_z,
             )
         )
@@ -240,14 +292,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sources-per-image",
         type=int,
+        default=None,
+        help="Fixed number of distinct sources in each image. If omitted, source count is sampled per image from --min-sources-per-image to --max-sources-per-image.",
+    )
+    parser.add_argument(
+        "--min-sources-per-image",
+        type=int,
+        default=1,
+        help="Minimum number of distinct sources per image in variable source-count mode.",
+    )
+    parser.add_argument(
+        "--max-sources-per-image",
+        type=int,
         default=5,
-        help="Number of distinct sources in each image.",
+        help="Maximum number of distinct sources per image in variable source-count mode.",
     )
     parser.add_argument(
         "--events-per-source",
         type=int,
         default=100,
-        help="Number of events generated from each source in one image.",
+        help="Number of events generated from each source. Ignored if --total-events-per-image is provided.",
+    )
+    parser.add_argument(
+        "--total-events-per-image",
+        type=int,
+        default=None,
+        help="If provided, keeps the total events per image fixed and divides them approximately equally across that image's sources.",
     )
     parser.add_argument(
         "--min-source-distance",
@@ -291,26 +361,79 @@ def main() -> None:
     random.seed(args.seed)
     np.random.seed(args.seed)
 
+    if args.sources_per_image is not None:
+        if args.sources_per_image < 1:
+            raise ValueError("--sources-per-image must be at least 1.")
+        fixed_sources_per_image: Optional[int] = int(args.sources_per_image)
+        min_sources_per_image = fixed_sources_per_image
+        max_sources_per_image = fixed_sources_per_image
+    else:
+        if args.min_sources_per_image < 1:
+            raise ValueError("--min-sources-per-image must be at least 1.")
+        if args.max_sources_per_image < args.min_sources_per_image:
+            raise ValueError("--max-sources-per-image must be >= --min-sources-per-image.")
+        fixed_sources_per_image = None
+        min_sources_per_image = int(args.min_sources_per_image)
+        max_sources_per_image = int(args.max_sources_per_image)
+
+    if args.total_events_per_image is not None and args.total_events_per_image < 1:
+        raise ValueError("--total-events-per-image must be at least 1.")
+    if args.total_events_per_image is None and args.events_per_source < 1:
+        raise ValueError("--events-per-source must be at least 1.")
+
     dataset = generate_dataset(
         num_images=args.num_images,
-        sources_per_image=args.sources_per_image,
+        sources_per_image=fixed_sources_per_image,
         events_per_source=args.events_per_source,
         min_source_distance=args.min_source_distance,
+        min_sources_per_image=min_sources_per_image,
+        max_sources_per_image=max_sources_per_image,
+        total_events_per_image=args.total_events_per_image,
         source_z=args.source_z,
     )
+
+    per_image_source_counts = (
+        dataset[["Image_ID", "Source_Instance_ID"]]
+        .drop_duplicates()
+        .groupby("Image_ID")
+        .size()
+    )
+    per_image_event_counts = dataset.groupby("Image_ID").size()
 
     if args.mode == "separate":
         write_separate_files(dataset, SEPARATE_OUTPUT_DIR)
         print("Generated separate multi-source CSV files:", args.num_images)
         print("Output directory:", SEPARATE_OUTPUT_DIR)
+        if fixed_sources_per_image is not None:
+            print("Sources per image:", fixed_sources_per_image)
+        else:
+            print("Sources per image:", f"variable [{min_sources_per_image}, {max_sources_per_image}]")
     else:
         output_path = Path(args.output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         dataset.to_csv(output_path, index=False)
         print("Generated merged multi-source dataset")
         print("Images:", args.num_images)
-        print("Sources per image:", args.sources_per_image)
-        print("Events per source:", args.events_per_source)
+        if fixed_sources_per_image is not None:
+            print("Sources per image:", fixed_sources_per_image)
+        else:
+            print("Sources per image:", f"variable [{min_sources_per_image}, {max_sources_per_image}]")
+            print(
+                "Actual generated source-count range:",
+                f"{int(per_image_source_counts.min())}..{int(per_image_source_counts.max())}",
+            )
+        if args.total_events_per_image is not None:
+            print("Total events per image:", args.total_events_per_image)
+            print(
+                "Actual generated event-count range:",
+                f"{int(per_image_event_counts.min())}..{int(per_image_event_counts.max())}",
+            )
+        else:
+            print("Events per source:", args.events_per_source)
+            print(
+                "Actual generated event-count range:",
+                f"{int(per_image_event_counts.min())}..{int(per_image_event_counts.max())}",
+            )
         print("Minimum source distance:", args.min_source_distance)
         print("Derived blur radius (mm):", round(BLUR_RADIUS_MM, 4))
         print("Random seed:", args.seed)
