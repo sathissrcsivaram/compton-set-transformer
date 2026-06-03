@@ -185,6 +185,17 @@ def build_image_tensors(
     return X, mask, y_heat, image_ids, image_source_coords
 
 
+def summarize_source_counts(source_coords: Sequence[np.ndarray]) -> Dict[str, object]:
+    counts = [int(np.asarray(coords).shape[0]) for coords in source_coords]
+    distribution = {str(k): int(v) for k, v in sorted(Counter(counts).items())}
+    return {
+        "min_sources_per_image": int(min(counts)) if counts else 0,
+        "max_sources_per_image": int(max(counts)) if counts else 0,
+        "source_count_distribution": distribution,
+        "fixed_sources_per_image": bool(len(distribution) == 1),
+    }
+
+
 def plot_multisource_heatmap_pairs(
     image_ids: Sequence[str],
     true_heatmaps: np.ndarray,
@@ -531,6 +542,7 @@ def main():
     X_train, M_train, y_train, iid_train, coords_train = build_image_tensors(df_train, MAX_EVENTS, EVENTS_PER_IMAGE)
     X_val, M_val, y_val, iid_val, coords_val = build_image_tensors(df_val, MAX_EVENTS, EVENTS_PER_IMAGE)
     X_test, M_test, y_test, iid_test, coords_test = build_image_tensors(df_test, MAX_EVENTS, EVENTS_PER_IMAGE)
+    source_count_summary = summarize_source_counts(coords_train + coords_val + coords_test)
 
     model = t.build_set_model(max_events=MAX_EVENTS, feat_dim=len(FEATURE_COLS))
     t.fit_normalizer(model, X_train)
@@ -626,7 +638,7 @@ def main():
             "train_images": len(iid_train),
             "val_images": len(iid_val),
             "test_images": len(iid_test),
-            "sources_per_image": 5,
+            **source_count_summary,
         },
     }
     with open(os.path.join(SAVE_DIR, "meta.json"), "w") as f:
