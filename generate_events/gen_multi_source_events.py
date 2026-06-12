@@ -86,6 +86,10 @@ def allocate_events_across_sources(
     num_sources: int,
     events_per_source: Optional[int],
     total_events_per_image: Optional[int],
+    random_events_per_source: bool = False,
+    min_events_per_source: int = 10,
+    max_events_per_source: int = 100,
+    events_per_source_step: int = 10,
 ) -> List[int]:
     if num_sources < 1:
         raise ValueError("num_sources must be at least 1.")
@@ -102,6 +106,10 @@ def allocate_events_across_sources(
         for i in range(remainder):
             counts[i] += 1
         return counts
+
+    if random_events_per_source:
+        choices = list(range(min_events_per_source, max_events_per_source + 1, events_per_source_step))
+        return [int(random.choice(choices)) for _ in range(num_sources)]
 
     if events_per_source is None:
         raise ValueError("Either events_per_source or total_events_per_image must be provided.")
@@ -242,6 +250,10 @@ def generate_dataset(
     min_sources_per_image: int = 1,
     max_sources_per_image: int = 5,
     total_events_per_image: Optional[int] = None,
+    random_events_per_source: bool = False,
+    min_events_per_source: int = 10,
+    max_events_per_source: int = 100,
+    events_per_source_step: int = 10,
     source_z: int = DEFAULT_SOURCE_Z,
 ) -> pd.DataFrame:
     frames: List[pd.DataFrame] = []
@@ -260,6 +272,10 @@ def generate_dataset(
             num_sources=num_sources,
             events_per_source=events_per_source,
             total_events_per_image=total_events_per_image,
+            random_events_per_source=random_events_per_source,
+            min_events_per_source=min_events_per_source,
+            max_events_per_source=max_events_per_source,
+            events_per_source_step=events_per_source_step,
         )
         frames.append(
             build_image_dataframe(
@@ -320,6 +336,29 @@ def parse_args() -> argparse.Namespace:
         help="If provided, keeps the total events per image fixed and divides them approximately equally across that image's sources.",
     )
     parser.add_argument(
+        "--random-events-per-source",
+        action="store_true",
+        help="Sample each source's event count from --min-events-per-source to --max-events-per-source using --events-per-source-step. Ignored if --total-events-per-image is provided.",
+    )
+    parser.add_argument(
+        "--min-events-per-source",
+        type=int,
+        default=10,
+        help="Minimum events per source when --random-events-per-source is used.",
+    )
+    parser.add_argument(
+        "--max-events-per-source",
+        type=int,
+        default=100,
+        help="Maximum events per source when --random-events-per-source is used.",
+    )
+    parser.add_argument(
+        "--events-per-source-step",
+        type=int,
+        default=10,
+        help="Step size for random per-source event counts.",
+    )
+    parser.add_argument(
         "--min-source-distance",
         type=float,
         default=DEFAULT_MIN_SOURCE_DISTANCE,
@@ -378,7 +417,14 @@ def main() -> None:
 
     if args.total_events_per_image is not None and args.total_events_per_image < 1:
         raise ValueError("--total-events-per-image must be at least 1.")
-    if args.total_events_per_image is None and args.events_per_source < 1:
+    if args.total_events_per_image is None and args.random_events_per_source:
+        if args.min_events_per_source < 1:
+            raise ValueError("--min-events-per-source must be at least 1.")
+        if args.max_events_per_source < args.min_events_per_source:
+            raise ValueError("--max-events-per-source must be >= --min-events-per-source.")
+        if args.events_per_source_step < 1:
+            raise ValueError("--events-per-source-step must be at least 1.")
+    if args.total_events_per_image is None and not args.random_events_per_source and args.events_per_source < 1:
         raise ValueError("--events-per-source must be at least 1.")
 
     dataset = generate_dataset(
@@ -389,6 +435,10 @@ def main() -> None:
         min_sources_per_image=min_sources_per_image,
         max_sources_per_image=max_sources_per_image,
         total_events_per_image=args.total_events_per_image,
+        random_events_per_source=args.random_events_per_source and args.total_events_per_image is None,
+        min_events_per_source=args.min_events_per_source,
+        max_events_per_source=args.max_events_per_source,
+        events_per_source_step=args.events_per_source_step,
         source_z=args.source_z,
     )
 
@@ -429,7 +479,13 @@ def main() -> None:
                 f"{int(per_image_event_counts.min())}..{int(per_image_event_counts.max())}",
             )
         else:
-            print("Events per source:", args.events_per_source)
+            if args.random_events_per_source:
+                print(
+                    "Random events per source:",
+                    f"{args.min_events_per_source}..{args.max_events_per_source} step {args.events_per_source_step}",
+                )
+            else:
+                print("Events per source:", args.events_per_source)
             print(
                 "Actual generated event-count range:",
                 f"{int(per_image_event_counts.min())}..{int(per_image_event_counts.max())}",
