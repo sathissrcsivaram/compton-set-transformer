@@ -183,6 +183,12 @@ def parse_args():
         default=str(MERGED_OUTPUT_PATH),
         help="Merged CSV output path used when mode='merged'.",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducible event generation.",
+    )
     return parser.parse_args()
 
 
@@ -190,6 +196,8 @@ def main():
     global Current_source_x, Current_source_y, Current_source_z
 
     args = parse_args()
+    random.seed(args.seed)
+    np.random.seed(args.seed)
 
     noOfSourcePerImage = 1
     noOfEventsPerSource = args.events_per_source
@@ -224,6 +232,7 @@ def main():
         print("Generated merged dataset CSV files:", count)
         print("Merged rows:", len(merged_df))
         print("Output:", output_path)
+    print("Random seed:", args.seed)
 
 #5 random source position
 """
