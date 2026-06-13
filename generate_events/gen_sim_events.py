@@ -12,7 +12,10 @@ from pathlib import Path
 import argparse
 
 # import system_matrix.code.config as config
-from . import params
+try:
+    from . import params
+except ImportError:
+    import params
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
