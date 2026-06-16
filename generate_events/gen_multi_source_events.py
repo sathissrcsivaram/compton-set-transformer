@@ -1,8 +1,9 @@
 import argparse
 import math
 import random
+from collections import Counter
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -255,15 +256,22 @@ def generate_dataset(
     max_events_per_source: int = 100,
     events_per_source_step: int = 10,
     source_z: int = DEFAULT_SOURCE_Z,
+    source_counts_by_image: Optional[Sequence[int]] = None,
 ) -> pd.DataFrame:
     frames: List[pd.DataFrame] = []
 
+    if source_counts_by_image is not None and len(source_counts_by_image) != num_images:
+        raise ValueError("source_counts_by_image length must match num_images.")
+
     for image_id in range(num_images):
-        num_sources = sample_num_sources_for_image(
-            fixed_sources_per_image=sources_per_image,
-            min_sources_per_image=min_sources_per_image,
-            max_sources_per_image=max_sources_per_image,
-        )
+        if source_counts_by_image is not None:
+            num_sources = int(source_counts_by_image[image_id])
+        else:
+            num_sources = sample_num_sources_for_image(
+                fixed_sources_per_image=sources_per_image,
+                min_sources_per_image=min_sources_per_image,
+                max_sources_per_image=max_sources_per_image,
+            )
         positions = sample_source_positions(
             num_sources=num_sources,
             min_distance=min_source_distance,
@@ -287,6 +295,47 @@ def generate_dataset(
         )
 
     return pd.concat(frames, ignore_index=True)
+
+
+
+def parse_source_counts(source_counts_text: str) -> Dict[int, int]:
+    counts: Dict[int, int] = {}
+
+    for part in source_counts_text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" not in part:
+            raise ValueError(
+                "--source-counts must use the format sources:images, "
+                "for example 1:25000,2:25000,3:60000,4:65000,5:75000."
+            )
+        source_count_text, image_count_text = part.split(":", 1)
+        source_count = int(source_count_text.strip())
+        image_count = int(image_count_text.strip())
+        if source_count < 1:
+            raise ValueError("Source counts in --source-counts must be at least 1.")
+        if image_count < 0:
+            raise ValueError("Image counts in --source-counts must be non-negative.")
+        counts[source_count] = counts.get(source_count, 0) + image_count
+
+    if not counts:
+        raise ValueError("--source-counts must contain at least one source-count entry.")
+    return counts
+
+
+def build_source_count_schedule(source_counts: Dict[int, int], num_images: int) -> List[int]:
+    if sum(source_counts.values()) != num_images:
+        raise ValueError(
+            f"--source-counts image total must equal --num-images. "
+            f"Got {sum(source_counts.values())}, expected {num_images}."
+        )
+
+    schedule: List[int] = []
+    for source_count, image_count in sorted(source_counts.items()):
+        schedule.extend([int(source_count)] * int(image_count))
+    random.shuffle(schedule)
+    return schedule
 
 
 def parse_args() -> argparse.Namespace:
@@ -322,6 +371,15 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=5,
         help="Maximum number of distinct sources per image in variable source-count mode.",
+    )
+    parser.add_argument(
+        "--source-counts",
+        default=None,
+        help=(
+            "Exact source-count distribution as sources:images pairs, for example "
+            "1:25000,2:25000,3:60000,4:65000,5:75000. "
+            "If provided, this overrides random source-count sampling."
+        ),
     )
     parser.add_argument(
         "--events-per-source",
@@ -415,6 +473,15 @@ def main() -> None:
         min_sources_per_image = int(args.min_sources_per_image)
         max_sources_per_image = int(args.max_sources_per_image)
 
+    source_count_schedule: Optional[List[int]] = None
+    if args.source_counts is not None:
+        if args.sources_per_image is not None:
+            raise ValueError("--source-counts cannot be used together with --sources-per-image.")
+        source_counts = parse_source_counts(args.source_counts)
+        if min(source_counts) < min_sources_per_image or max(source_counts) > max_sources_per_image:
+            raise ValueError("--source-counts keys must be within the min/max source-count range.")
+        source_count_schedule = build_source_count_schedule(source_counts, args.num_images)
+
     if args.total_events_per_image is not None and args.total_events_per_image < 1:
         raise ValueError("--total-events-per-image must be at least 1.")
     if args.total_events_per_image is None and args.random_events_per_source:
@@ -440,6 +507,7 @@ def main() -> None:
         max_events_per_source=args.max_events_per_source,
         events_per_source_step=args.events_per_source_step,
         source_z=args.source_z,
+        source_counts_by_image=source_count_schedule,
     )
 
     per_image_source_counts = (
@@ -468,6 +536,8 @@ def main() -> None:
             print("Sources per image:", fixed_sources_per_image)
         else:
             print("Sources per image:", f"variable [{min_sources_per_image}, {max_sources_per_image}]")
+            if source_count_schedule is not None:
+                print("Requested source-count distribution:", dict(sorted(Counter(source_count_schedule).items())))
             print(
                 "Actual generated source-count range:",
                 f"{int(per_image_source_counts.min())}..{int(per_image_source_counts.max())}",
